@@ -1,6 +1,6 @@
 {
   "name": "dsh-linalg",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Linear algebra toolbox for DeepSeek Harness (dsh): matrix multiply, determinant, inverse, trace, transpose, RREF, linear system solver with unique/infinite/none classification, and vector ops (dot/cross/norm/projection/angle) — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
@@ -53,6 +53,7 @@
     "@deepseek-ai/dsh-tools": "0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "3.2.0",
     "oxlint": "^1.6.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
