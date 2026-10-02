@@ -1,5 +1,7 @@
 /**
  * Unit tests for the vector core, anchored by the same independent oracle.
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 
 import { describe, expect, it } from 'vitest'

@@ -224,6 +224,49 @@ export function rref(m: Matrix, roundPlaces: number): Matrix {
   return cleanMatrix(a, roundPlaces)
 }
 
+/** Rank = number of non-zero rows in the reduced row echelon form. */
+export function rankOf(m: Matrix, roundPlaces: number): number {
+  let rank = 0
+  for (const row of rref(m, roundPlaces)) {
+    if (row.some((v) => v !== 0)) rank++
+  }
+  return rank
+}
+
+/** Outcome of an integer matrix power: either the product or a reason it is undefined. */
+export type PowerOutcome = { matrix: Matrix } | { error: string }
+
+/**
+ * Integer matrix power A^k (k = 0 gives the identity, k < 0 inverts first).
+ * Uses binary exponentiation; the exponent is capped by the caller's schema.
+ */
+export function power(m: Matrix, k: number, roundPlaces: number): PowerOutcome {
+  const n = rowsOf(m)
+  if (n !== colsOf(m)) return { error: `power requires a square matrix; got ${n}x${colsOf(m)}` }
+  if (!Number.isInteger(k)) return { error: `exponent must be an integer; got ${k}` }
+  if (Math.abs(k) > 64) return { error: `exponent must be between -64 and 64; got ${k}` }
+  let base: Matrix = cleanMatrix(m, roundPlaces)
+  let exp = k
+  if (k < 0) {
+    const inv = inverse(base, roundPlaces)
+    if (inv === null) return { error: 'negative exponents need an invertible matrix; this one is singular (or numerically singular)' }
+    base = inv
+    exp = -k
+  }
+  let result: Matrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)))
+  while (exp > 0) {
+    if (exp % 2 === 1) result = multiply(result, base) as Matrix
+    exp = Math.floor(exp / 2)
+    if (exp > 0) base = multiply(base, base) as Matrix
+  }
+  for (const row of result) {
+    for (const v of row) {
+      if (!Number.isFinite(v)) return { error: `result overflowed to a non-finite value for exponent ${k}` }
+    }
+  }
+  return { matrix: cleanMatrix(result, roundPlaces) }
+}
+
 export type SolveKind = 'unique' | 'infinite' | 'none'
 
 export interface SolveOutcome {
@@ -331,4 +374,145 @@ export function solve(a: Matrix, b: number[], roundPlaces: number): { error: str
   const message = `system has ${rank} pivot(s) and ${freeCols.length} free variable(s); ` +
     'general solution = particular solution + any linear combination of the nullspace basis vectors'
   return { kind: 'infinite', particular, nullspaceBasis: basis, freeVariableCount: freeCols.length, rref: reduced, message }
+}
+
+/** Spectrum of a real symmetric matrix, as produced by {@link eigenSymmetric}. */
+export interface EigenOutcome {
+  /** Eigenvalues in descending order. */
+  eigenvalues: number[]
+  /** Eigenvectors as ROWS in the same order (row i belongs to eigenvalue i), each unit length. */
+  eigenvectors: Matrix
+  /** Number of Jacobi rotations applied. */
+  rotations: number
+  /** Largest |A·v − λ·v| entry over all eigenpairs (honest accuracy report). */
+  maxResidual: number
+  /** Sum of the eigenvalues — equals the trace, kept as a self-check. */
+  traceSum: number
+}
+
+/**
+ * Eigen-decomposition of a real symmetric matrix via the cyclic Jacobi method.
+ *
+ * Returns { error } when the matrix is not square, is not symmetric within
+ * tolerance, or fails to converge — it never fabricates a spectrum.
+ * `roundPlaces` only affects the reported numbers; the iteration itself runs
+ * in full double precision.
+ */
+export function eigenSymmetric(m: Matrix, roundPlaces: number): { error: string } | EigenOutcome {
+  const n = rowsOf(m)
+  if (n !== colsOf(m)) return { error: `eigen-decomposition requires a square matrix; got ${n}x${colsOf(m)}` }
+  let scale = 0
+  for (const row of m) for (const v of row) scale = Math.max(scale, Math.abs(v))
+  const symTol = 1e-9 * (1 + scale)
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const diff = Math.abs((m[i]?.[j] ?? 0) - (m[j]?.[i] ?? 0))
+      if (diff > symTol) {
+        return {
+          error: `matrix is not symmetric: (${i},${j}) = ${m[i]?.[j]} but (${j},${i}) = ${m[j]?.[i]}, difference ${diff} exceeds tolerance ${symTol}; only real symmetric matrices have a guaranteed real spectrum here`,
+        }
+      }
+    }
+  }
+  const a: Matrix = m.map((row) => [...row])
+  const v: Matrix = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)))
+  // symmetrise rounding-level asymmetries so every rotation stays exact
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const avg = ((a[i]?.[j] ?? 0) + (a[j]?.[i] ?? 0)) / 2
+      a[i]![j] = avg
+      a[j]![i] = avg
+    }
+  }
+  let frobenius = 0
+  for (const row of a) for (const x of row) frobenius += x * x
+  const tol = 1e-13 * (1 + Math.sqrt(frobenius))
+  const maxSweeps = 100
+  let rotations = 0
+  let converged = false
+  const offDiagonal = (): number => {
+    let off = 0
+    for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += (a[p]?.[q] ?? 0) ** 2
+    return Math.sqrt(off)
+  }
+  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+    if (offDiagonal() <= tol) {
+      converged = true
+      break
+    }
+    for (let p = 0; p < n; p++) {
+      for (let q = p + 1; q < n; q++) {
+        const apq = a[p]?.[q] ?? 0
+        if (Math.abs(apq) <= tol / (n === 0 ? 1 : n)) continue
+        const theta = ((a[q]?.[q] ?? 0) - (a[p]?.[p] ?? 0)) / (2 * apq)
+        const t = theta === 0 ? 1 : Math.sign(theta) / (Math.abs(theta) + Math.sqrt(theta * theta + 1))
+        const c = 1 / Math.sqrt(t * t + 1)
+        const s = t * c
+        for (let k = 0; k < n; k++) {
+          const akp = a[k]?.[p] ?? 0
+          const akq = a[k]?.[q] ?? 0
+          a[k]![p] = c * akp - s * akq
+          a[k]![q] = s * akp + c * akq
+        }
+        for (let k = 0; k < n; k++) {
+          const apk = a[p]?.[k] ?? 0
+          const aqk = a[q]?.[k] ?? 0
+          a[p]![k] = c * apk - s * aqk
+          a[q]![k] = s * apk + c * aqk
+        }
+        for (let k = 0; k < n; k++) {
+          const vkp = v[k]?.[p] ?? 0
+          const vkq = v[k]?.[q] ?? 0
+          v[k]![p] = c * vkp - s * vkq
+          v[k]![q] = s * vkp + c * vkq
+        }
+        rotations++
+      }
+    }
+  }
+  if (!converged && offDiagonal() > tol) {
+    return {
+      error: `Jacobi iteration did not converge within ${maxSweeps} sweeps (${rotations} rotations, off-diagonal norm ${offDiagonal()}); no spectrum reported rather than an inaccurate one`,
+    }
+  }
+  const order = Array.from({ length: n }, (_, i) => i).sort((i, j) => (a[j]?.[j] ?? 0) - (a[i]?.[i] ?? 0))
+  const rawEigenvalues: number[] = []
+  const eigenvalues: number[] = []
+  const eigenvectors: Matrix = []
+  for (const index of order) {
+    const lambda = a[index]?.[index] ?? 0
+    let column = v.map((row) => row[index] ?? 0)
+    let norm2 = 0
+    for (const x of column) norm2 += x * x
+    const length = Math.sqrt(norm2)
+    if (length > 0) column = column.map((x) => x / length)
+    // Deterministic sign: the leading non-negligible component is positive.
+    // (A largest-magnitude rule would flip unpredictably when two components
+    // tie in absolute value up to floating-point dust.)
+    let lead = 0
+    while (lead < column.length && Math.abs(column[lead] ?? 0) <= 1e-8) lead++
+    if (lead < column.length && (column[lead] ?? 0) < 0) column = column.map((x) => -x)
+    rawEigenvalues.push(lambda)
+    eigenvalues.push(cleanValue(lambda, roundPlaces))
+    eigenvectors.push(column.map((x) => cleanValue(x, roundPlaces)))
+  }
+  let maxResidual = 0
+  for (let i = 0; i < n; i++) {
+    const vec = eigenvectors[i] ?? []
+    const lambda = rawEigenvalues[i] ?? 0
+    for (let r = 0; r < n; r++) {
+      let sum = 0
+      for (let c = 0; c < n; c++) sum += (m[r]?.[c] ?? 0) * (vec[c] ?? 0)
+      maxResidual = Math.max(maxResidual, Math.abs(sum - lambda * (vec[r] ?? 0)))
+    }
+  }
+  let traceSum = 0
+  for (const lambda of rawEigenvalues) traceSum += lambda
+  return {
+    eigenvalues,
+    eigenvectors,
+    rotations,
+    maxResidual: cleanValue(maxResidual, roundPlaces),
+    traceSum: cleanValue(traceSum, roundPlaces),
+  }
 }

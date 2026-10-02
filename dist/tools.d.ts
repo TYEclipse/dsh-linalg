@@ -12,6 +12,7 @@ import type { ResolvedConfig } from './index.ts';
 export interface ToolSet {
     matrix_multiply: ToolDefinition;
     matrix_compute: ToolDefinition;
+    matrix_eigen: ToolDefinition;
     solve_linear: ToolDefinition;
     vector_ops: ToolDefinition;
 }

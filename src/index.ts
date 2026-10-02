@@ -1,9 +1,10 @@
 /**
  * dsh-linalg — linear algebra toolbox for DeepSeek Harness.
  *
- * Four pure-math tools, zero runtime dependencies:
+ * Five pure-math tools, zero runtime dependencies:
  *   matrix_multiply — matrix product A·B with dimension checking
- *   matrix_compute  — transpose / determinant / inverse / trace / rref
+ *   matrix_compute  — transpose / determinant / inverse / trace / rref / rank / power
+ *   matrix_eigen    — symmetric eigen-decomposition (Jacobi) with residuals
  *   solve_linear    — solve Ax = b, classified as unique / infinite / none
  *   vector_ops      — dot / cross / norm / projection / angle
  *

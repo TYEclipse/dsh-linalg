@@ -8,9 +8,9 @@
  * @module dsh-linalg/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { cleanMatrix, cleanValue, determinant, inverse, multiply, parseMatrix, rref, solve, trace, transpose, } from "./matrix.js";
+import { cleanMatrix, cleanValue, determinant, eigenSymmetric, inverse, multiply, parseMatrix, power, rankOf, rref, solve, trace, transpose, } from "./matrix.js";
 import { angleDeg, cross, dot, norm, parseVector, projection } from "./vector.js";
-const MATRIX_OPS = ['transpose', 'determinant', 'inverse', 'trace', 'rref'];
+const MATRIX_OPS = ['transpose', 'determinant', 'inverse', 'trace', 'rref', 'rank', 'power'];
 const VECTOR_OPS = ['dot', 'cross', 'norm', 'projection', 'angle'];
 function renderMatrix(name, m) {
     return `${name} (${m.length}x${m[0]?.length ?? 0}):\n${m.map((row) => `  [${row.join(', ')}]`).join('\n')}`;
@@ -28,6 +28,16 @@ function renderCompute(value) {
     if (result.result !== undefined)
         return `${result.op} = ${result.result}`;
     return renderMatrix(result.op, result.matrix);
+}
+function renderEigen(value) {
+    const result = value;
+    if (!result.valid)
+        return `matrix eigen failed: ${result.error}`;
+    const eigenvalues = `eigenvalues (descending): ${result.eigenvalues.join(', ')}`;
+    const rows = result.eigenvectors
+        .map((vec, index) => `  lambda${index + 1} = ${result.eigenvalues[index]}: [${vec.join(', ')}]`)
+        .join('\n');
+    return `${eigenvalues}\nsum = ${result.traceSum}, max residual = ${result.maxResidual}\neigenvectors (unit, one per row):\n${rows}`;
 }
 function renderSolve(value) {
     const result = value;
@@ -95,12 +105,14 @@ export function buildLinalgTools(config) {
     });
     const matrix_compute = defineTool({
         name: 'matrix_compute',
-        description: 'Compute a single matrix operation: transpose, determinant, inverse, trace, or reduced row '
-            + 'echelon form (rref). Determinant and inverse require square matrices; singular matrices (determinant 0) '
-            + 'report an error instead of producing garbage. Pure arithmetic, no external calls.',
+        description: 'Compute a single matrix operation: transpose, determinant, inverse, trace, reduced row '
+            + 'echelon form (rref), rank, or an integer power (power). Determinant, inverse and power require square '
+            + 'matrices; singular matrices (determinant 0) report an error instead of producing garbage. Pure '
+            + 'arithmetic, no external calls.',
         parameters: {
             matrix: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } }, description: `Matrix as rows of numbers, e.g. [[1,2],[3,4]]. Maximum dimension ${maxDim}x${maxDim}.` },
-            op: { type: 'string', required: true, enum: [...MATRIX_OPS], description: 'Operation to perform: transpose | determinant | inverse | trace | rref.' },
+            op: { type: 'string', required: true, enum: [...MATRIX_OPS], description: 'Operation to perform: transpose | determinant | inverse | trace | rref | rank | power.' },
+            exponent: { type: 'number', description: 'Exponent for op="power": an integer from -64 to 64 (negative exponents invert first, 0 gives the identity). Ignored by every other operation.' },
         },
         output: {
             schema: {
@@ -158,9 +170,69 @@ export function buildLinalgTools(config) {
                     const out = { valid: true, op, matrix: rref(m, roundPlaces) };
                     return out;
                 }
+                case 'rank': {
+                    const out = { valid: true, op, result: rankOf(m, roundPlaces) };
+                    return out;
+                }
+                case 'power': {
+                    if (args.exponent === undefined)
+                        return { valid: false, op, error: 'power requires an integer exponent, e.g. exponent=3 for A³ or exponent=-1 for A⁻¹' };
+                    const raised = power(m, args.exponent, roundPlaces);
+                    if ('error' in raised)
+                        return { valid: false, op, error: raised.error };
+                    const out = { valid: true, op, matrix: raised.matrix };
+                    return out;
+                }
                 default:
                     return { valid: false, op, error: `unknown operation: ${op}` };
             }
+        },
+    });
+    const matrix_eigen = defineTool({
+        name: 'matrix_eigen',
+        description: 'Eigen-decomposition of a real symmetric matrix (cyclic Jacobi method): returns every '
+            + 'eigenvalue in descending order plus a matching unit eigenvector per eigenvalue (signed so the leading '
+            + 'non-zero component is positive), the rotation count and the measured residual max|A·v − λ·v|. '
+            + 'Non-square or non-symmetric input, and non-convergence, are reported as errors rather than guessed. '
+            + 'Use this instead of factoring characteristic polynomials by hand. Pure arithmetic, no external calls.',
+        parameters: {
+            matrix: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } }, description: `Symmetric matrix as rows of numbers, e.g. [[2,1],[1,2]]. Maximum dimension ${maxDim}x${maxDim}.` },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    op: { type: 'string', required: true },
+                    error: { type: 'string' },
+                    eigenvalues: { type: 'array', items: { type: 'number' } },
+                    eigenvectors: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+                    rotations: { type: 'number' },
+                    maxResidual: { type: 'number' },
+                    traceSum: { type: 'number' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderEigen(value) }],
+        },
+        async execute(args) {
+            const op = 'symmetric';
+            const pm = parseMatrix(args.matrix, maxDim, roundPlaces);
+            if ('error' in pm)
+                return { valid: false, op, error: pm.error };
+            const outcome = eigenSymmetric(pm.matrix, roundPlaces);
+            if ('error' in outcome)
+                return { valid: false, op, error: outcome.error };
+            const out = {
+                valid: true,
+                op,
+                eigenvalues: outcome.eigenvalues,
+                eigenvectors: outcome.eigenvectors,
+                rotations: outcome.rotations,
+                maxResidual: outcome.maxResidual,
+                traceSum: outcome.traceSum,
+            };
+            return out;
         },
     });
     const solve_linear = defineTool({
@@ -293,6 +365,6 @@ export function buildLinalgTools(config) {
             }
         },
     });
-    return { matrix_multiply, matrix_compute, solve_linear, vector_ops };
+    return { matrix_multiply, matrix_compute, matrix_eigen, solve_linear, vector_ops };
 }
 //# sourceMappingURL=tools.js.map

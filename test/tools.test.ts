@@ -1,6 +1,8 @@
 /**
  * Tests for tool definition assembly, config resolution, execute paths,
  * schema-level enum rejection, and lossless-JSON discipline.
+ *
+ * ORACLE: test/oracle/anchors.py
  */
 
 import { describe, expect, it } from 'vitest'
@@ -38,8 +40,8 @@ describe('resolveConfig', () => {
 describe('buildLinalgTools', () => {
   const tools = buildLinalgTools(resolveConfig({}))
 
-  it('exposes all four tools under their canonical names', () => {
-    expect(Object.keys(tools).sort()).toEqual(['matrix_compute', 'matrix_multiply', 'solve_linear', 'vector_ops'].sort())
+  it('exposes all five tools under their canonical names', () => {
+    expect(Object.keys(tools).sort()).toEqual(['matrix_compute', 'matrix_eigen', 'matrix_multiply', 'solve_linear', 'vector_ops'])
   })
 
   it('gives every tool a name, description, schema and executable', () => {
@@ -132,6 +134,91 @@ describe('matrix_compute execute', () => {
 
   it('invalid enum value is rejected at the schema layer', async () => {
     await expect(run({ matrix: [[1]], op: 'eigenvalues' })).rejects.toThrow()
+  })
+
+  it('rank anchor', async () => {
+    const out = (await run({ matrix: [[1, 2, 3], [4, 5, 6], [7, 8, 9]], op: 'rank' })) as { valid: boolean; result: number }
+    expect(out.valid).toBe(true)
+    expect(out.result).toBe(2)
+    assertNoUndefined(out)
+  })
+
+  it('rank of a zero matrix is 0', async () => {
+    const out = (await run({ matrix: [[0, 0], [0, 0]], op: 'rank' })) as { valid: boolean; result: number }
+    expect(out.result).toBe(0)
+  })
+
+  it('power anchor: A³ of [[1,1],[0,1]]', async () => {
+    const out = (await run({ matrix: [[1, 1], [0, 1]], op: 'power', exponent: 3 })) as { valid: boolean; matrix: number[][] }
+    expect(out.valid).toBe(true)
+    expect(out.matrix).toEqual([[1, 3], [0, 1]])
+    assertNoUndefined(out)
+  })
+
+  it('power with a negative exponent inverts first', async () => {
+    const out = (await run({ matrix: [[4, 7], [2, 6]], op: 'power', exponent: -1 })) as { valid: boolean; matrix: number[][] }
+    expect(out.matrix).toEqual([[0.6, -0.7], [-0.2, 0.4]])
+  })
+
+  it('power without an exponent is a clean failure', async () => {
+    const out = (await run({ matrix: [[1, 0], [0, 1]], op: 'power' })) as { valid: boolean; error: string }
+    expect(out.valid).toBe(false)
+    expect(out.error).toContain('exponent')
+    assertNoUndefined(out)
+  })
+
+  it('power on a singular matrix with a negative exponent is a clean failure', async () => {
+    const out = (await run({ matrix: [[1, 2], [2, 4]], op: 'power', exponent: -2 })) as { valid: boolean; error: string }
+    expect(out.valid).toBe(false)
+    expect(out.error).toContain('singular')
+  })
+})
+
+describe('matrix_eigen execute', () => {
+  const tools = buildLinalgTools(resolveConfig({}))
+  const run = tools.matrix_eigen.execute as unknown as Exec
+
+  it('2x2 oracle anchor', async () => {
+    const out = (await run({ matrix: [[2, 1], [1, 2]] })) as {
+      valid: boolean
+      op: string
+      eigenvalues: number[]
+      eigenvectors: number[][]
+      rotations: number
+      maxResidual: number
+      traceSum: number
+    }
+    expect(out.valid).toBe(true)
+    expect(out.op).toBe('symmetric')
+    expect(out.eigenvalues[0]).toBeCloseTo(3, 8)
+    expect(out.eigenvalues[1]).toBeCloseTo(1, 8)
+    expect(out.eigenvectors[0]?.[0]).toBeCloseTo(0.7071067812, 8)
+    expect(out.traceSum).toBeCloseTo(4, 8)
+    expect(out.maxResidual).toBeCloseTo(0, 8)
+    assertNoUndefined(out)
+  })
+
+  it('tridiagonal 4x4 oracle anchor', async () => {
+    const out = (await run({ matrix: [[2, -1, 0, 0], [-1, 2, -1, 0], [0, -1, 2, -1], [0, 0, -1, 2]] })) as {
+      valid: boolean
+      eigenvalues: number[]
+    }
+    expect(out.eigenvalues).toHaveLength(4)
+    expect(out.eigenvalues[0]).toBeCloseTo(3.6180339887, 8)
+    expect(out.eigenvalues[3]).toBeCloseTo(0.3819660113, 8)
+  })
+
+  it('non-symmetric input is a clean failure', async () => {
+    const out = (await run({ matrix: [[1, 2], [3, 4]] })) as { valid: boolean; error: string }
+    expect(out.valid).toBe(false)
+    expect(out.error).toContain('not symmetric')
+    assertNoUndefined(out)
+  })
+
+  it('non-square input is a clean failure', async () => {
+    const out = (await run({ matrix: [[1, 2, 3], [4, 5, 6]] })) as { valid: boolean; error: string }
+    expect(out.valid).toBe(false)
+    expect(out.error).toContain('square')
   })
 })
 
@@ -273,5 +360,45 @@ describe('renders', () => {
       { valid: true, op: 'cross', vector: [-3, 6, -3] },
     )
     expect(block[0]?.text).toBe('cross = [-3, 6, -3]')
+  })
+
+  it('renders an eigenvalue report', () => {
+    const block = tools.matrix_eigen.output.render(
+      { matrix: [[2, 1], [1, 2]] },
+      {
+        valid: true,
+        op: 'symmetric',
+        eigenvalues: [3, 1],
+        eigenvectors: [[0.7071067812, 0.7071067812], [0.7071067812, -0.7071067812]],
+        rotations: 1,
+        maxResidual: 0,
+        traceSum: 4,
+      },
+    )
+    expect(block[0]?.text).toContain('eigenvalues (descending): 3, 1')
+    expect(block[0]?.text).toContain('sum = 4, max residual = 0')
+    expect(block[0]?.text).toContain('lambda1 = 3: [0.7071067812, 0.7071067812]')
+  })
+
+  it('renders an eigen failure', () => {
+    const block = tools.matrix_eigen.output.render(
+      { matrix: [[1, 2], [3, 4]] },
+      { valid: false, op: 'symmetric', error: 'matrix is not symmetric' },
+    )
+    expect(block[0]?.text).toBe('matrix eigen failed: matrix is not symmetric')
+  })
+
+  it('renders rank and power results through the shared compute renderer', () => {
+    const rankBlock = tools.matrix_compute.output.render(
+      { matrix: [[1]], op: 'rank' },
+      { valid: true, op: 'rank', result: 2 },
+    )
+    expect(rankBlock[0]?.text).toBe('rank = 2')
+    const powerBlock = tools.matrix_compute.output.render(
+      { matrix: [[1]], op: 'power' },
+      { valid: true, op: 'power', matrix: [[1, 3], [0, 1]] },
+    )
+    expect(powerBlock[0]?.text).toContain('power (2x2)')
+    expect(powerBlock[0]?.text).toContain('[1, 3]')
   })
 })

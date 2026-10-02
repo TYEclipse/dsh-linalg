@@ -40,6 +40,19 @@ export declare function determinant(m: Matrix, roundPlaces: number): number | nu
 export declare function inverse(m: Matrix, roundPlaces: number): Matrix | null;
 /** Reduced row echelon form via Gauss–Jordan with partial pivoting. */
 export declare function rref(m: Matrix, roundPlaces: number): Matrix;
+/** Rank = number of non-zero rows in the reduced row echelon form. */
+export declare function rankOf(m: Matrix, roundPlaces: number): number;
+/** Outcome of an integer matrix power: either the product or a reason it is undefined. */
+export type PowerOutcome = {
+    matrix: Matrix;
+} | {
+    error: string;
+};
+/**
+ * Integer matrix power A^k (k = 0 gives the identity, k < 0 inverts first).
+ * Uses binary exponentiation; the exponent is capped by the caller's schema.
+ */
+export declare function power(m: Matrix, k: number, roundPlaces: number): PowerOutcome;
 export type SolveKind = 'unique' | 'infinite' | 'none';
 export interface SolveOutcome {
     kind: SolveKind;
@@ -63,4 +76,28 @@ export interface SolveOutcome {
 export declare function solve(a: Matrix, b: number[], roundPlaces: number): {
     error: string;
 } | SolveOutcome;
+/** Spectrum of a real symmetric matrix, as produced by {@link eigenSymmetric}. */
+export interface EigenOutcome {
+    /** Eigenvalues in descending order. */
+    eigenvalues: number[];
+    /** Eigenvectors as ROWS in the same order (row i belongs to eigenvalue i), each unit length. */
+    eigenvectors: Matrix;
+    /** Number of Jacobi rotations applied. */
+    rotations: number;
+    /** Largest |A·v − λ·v| entry over all eigenpairs (honest accuracy report). */
+    maxResidual: number;
+    /** Sum of the eigenvalues — equals the trace, kept as a self-check. */
+    traceSum: number;
+}
+/**
+ * Eigen-decomposition of a real symmetric matrix via the cyclic Jacobi method.
+ *
+ * Returns { error } when the matrix is not square, is not symmetric within
+ * tolerance, or fails to converge — it never fabricates a spectrum.
+ * `roundPlaces` only affects the reported numbers; the iteration itself runs
+ * in full double precision.
+ */
+export declare function eigenSymmetric(m: Matrix, roundPlaces: number): {
+    error: string;
+} | EigenOutcome;
 //# sourceMappingURL=matrix.d.ts.map
