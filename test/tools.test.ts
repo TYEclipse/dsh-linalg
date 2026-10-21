@@ -40,8 +40,16 @@ describe('resolveConfig', () => {
 describe('buildLinalgTools', () => {
   const tools = buildLinalgTools(resolveConfig({}))
 
-  it('exposes all five tools under their canonical names', () => {
-    expect(Object.keys(tools).sort()).toEqual(['matrix_compute', 'matrix_eigen', 'matrix_multiply', 'solve_linear', 'vector_ops'])
+  it('exposes all seven tools under their canonical names', () => {
+    expect(Object.keys(tools).sort()).toEqual([
+      'least_squares',
+      'matrix_compute',
+      'matrix_decompose',
+      'matrix_eigen',
+      'matrix_multiply',
+      'solve_linear',
+      'vector_ops',
+    ])
   })
 
   it('gives every tool a name, description, schema and executable', () => {

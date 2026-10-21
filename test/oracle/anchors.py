@@ -213,6 +213,110 @@ def signed(v):
 
 
 # --------------------------------------------------------------------------
+# decomposition helpers (v0.3.0): exact LU / Cholesky / least squares plus a
+# classical Gram–Schmidt QR — a different algorithm from the plugin's modified
+# one, so the two only agree if the factorization itself is right.
+# --------------------------------------------------------------------------
+
+def fsqrt(fr):
+    """Exact square root of a non-negative Fraction, or None when irrational."""
+    num, den = fr.numerator, fr.denominator
+    rn, rd = math.isqrt(num), math.isqrt(den)
+    if rn * rn == num and rd * rd == den:
+        return F(rn, rd)
+    return None
+
+
+def lu_exact(m):
+    """LU with partial pivoting (same pivot rule as the plugin): p, L, U, swaps, singular, det."""
+    n = len(m)
+    a = to_frac(m)
+    p = list(range(n))
+    low = [[F(1) if i == j else F(0) for j in range(n)] for i in range(n)]
+    swaps = 0
+    singular = False
+    for col in range(n):
+        pivot_row, best = col, abs(a[col][col])
+        for r in range(col + 1, n):
+            if abs(a[r][col]) > best:
+                best, pivot_row = abs(a[r][col]), r
+        if best < F(1, 10 ** 12):
+            singular = True
+            continue
+        if pivot_row != col:
+            a[col], a[pivot_row] = a[pivot_row], a[col]
+            p[col], p[pivot_row] = p[pivot_row], p[col]
+            for j in range(col):
+                low[col][j], low[pivot_row][j] = low[pivot_row][j], low[col][j]
+            swaps += 1
+        for r in range(col + 1, n):
+            factor = a[r][col] / a[col][col]
+            if factor == 0:
+                continue
+            low[r][col] = factor
+            for c in range(col, n):
+                a[r][c] -= factor * a[col][c]
+    det = F(-1) ** swaps
+    for i in range(n):
+        det *= a[i][i]
+    return p, low, a, swaps, singular, det
+
+
+def qr_gram_schmidt(m):
+    """Classical Gram–Schmidt thin QR (float norms; returns (None, None) when rank-deficient)."""
+    rows, cols = len(m), len(m[0])
+    a = [[float(x) for x in row] for row in m]
+    q = [[0.0] * cols for _ in range(rows)]
+    r = [[0.0] * cols for _ in range(cols)]
+    for j in range(cols):
+        v = [a[i][j] for i in range(rows)]
+        for k in range(j):
+            dot = sum(q[i][k] * v[i] for i in range(rows))
+            r[k][j] = dot
+            for i in range(rows):
+                v[i] -= dot * q[i][k]
+        norm = math.sqrt(sum(x * x for x in v))
+        r[j][j] = norm
+        if norm == 0:
+            return None, None
+        for i in range(rows):
+            q[i][j] = v[i] / norm
+    return q, r
+
+
+def cholesky_exact(m):
+    """Exact Cholesky; returns (L, None) or (None, offending pivot)."""
+    n = len(m)
+    a = to_frac(m)
+    low = [[F(0)] * n for _ in range(n)]
+    for j in range(n):
+        diagonal = a[j][j] - sum(low[j][k] ** 2 for k in range(j))
+        if diagonal <= 0:
+            return None, diagonal
+        root = fsqrt(diagonal)
+        if root is None:
+            return None, diagonal
+        low[j][j] = root
+        for i in range(j + 1, n):
+            low[i][j] = (a[i][j] - sum(low[i][k] * low[j][k] for k in range(j))) / root
+    return low, None
+
+
+def least_squares_exact(a, b):
+    """Exact least squares through the normal equations (the plugin uses QR instead)."""
+    aq = to_frac(a)
+    bq = [F(x) for x in b]
+    m, n = len(aq), len(aq[0])
+    ata = [[sum(aq[t][i] * aq[t][j] for t in range(m)) for j in range(n)] for i in range(n)]
+    atb = [sum(aq[t][i] * bq[t] for t in range(m)) for i in range(n)]
+    x = solve_exact(ata, atb)["solution"]
+    residual = [sum(aq[i][j] * x[j] for j in range(n)) - bq[i] for i in range(m)]
+    norm = math.sqrt(float(sum(r * r for r in residual)))
+    normal = max(abs(sum(aq[t][j] * residual[t] for t in range(m))) for j in range(n))
+    return x, norm, residual, normal
+
+
+# --------------------------------------------------------------------------
 # A. legacy anchors (already asserted by the v0.1.x tests)
 # --------------------------------------------------------------------------
 
@@ -397,6 +501,86 @@ def section_c():
     print()
 
 
+def section_d():
+    print("== D. decompositions (v0.3.0): LU / QR / Cholesky / least squares ==")
+    print("-- LU (partial pivoting; P·A = L·U, L unit lower, U upper)")
+    for label, m in [
+        ("[[2,1,1],[4,-6,0],[-2,7,2]]", [[2, 1, 1], [4, -6, 0], [-2, 7, 2]]),
+        ("[[0,1,0,3],[2,0,0,1],[0,0,1,0],[0,2,0,0]]", [[0, 1, 0, 3], [2, 0, 0, 1], [0, 0, 1, 0], [0, 2, 0, 0]]),
+        ("[[1,2],[2,4]]", [[1, 2], [2, 4]]),
+    ]:
+        p, low, up, swaps, singular, det = lu_exact(m)
+        source = to_frac(m)
+        residual = max(
+            abs(sum(low[i][k] * up[k][j] for k in range(len(m))) - source[p[i]][j])
+            for i in range(len(m)) for j in range(len(m))
+        )
+        print(f"-- {label}")
+        print("   p =", p, "| swaps =", swaps, "| sign =", (-1) ** swaps,
+              "| singular =", singular, "| det from U =", d10(det))
+        print("   L =", [[d10(x) for x in row] for row in low])
+        print("   U =", [[d10(x) for x in row] for row in up])
+        print("   max |P·A − L·U| =", float(residual))
+    print("-- QR (thin, R diagonal positive; A = Q·R)")
+    for label, m in [
+        ("[[3,0],[4,5]]", [[3, 0], [4, 5]]),
+        ("[[3,0],[4,0],[0,5]]", [[3, 0], [4, 0], [0, 5]]),
+        ("[[1,1],[1,0],[0,1]]", [[1, 1], [1, 0], [0, 1]]),
+    ]:
+        q, r = qr_gram_schmidt(m)
+        rows, cols = len(m), len(m[0])
+        residual = max(
+            abs(sum(q[i][k] * r[k][j] for k in range(cols)) - m[i][j])
+            for i in range(rows) for j in range(cols)
+        )
+        ortho = max(
+            abs(sum(q[i][a] * q[i][b] for i in range(rows)) - (1.0 if a == b else 0.0))
+            for a in range(cols) for b in range(cols)
+        )
+        print(f"-- {label}")
+        print("   Q =", [[d10(x) for x in row] for row in q])
+        print("   R =", [[d10(x) for x in row] for row in r])
+        print("   max |A − Q·R| =", f"{residual:.3e}", "| max |QᵀQ − I| =", f"{ortho:.3e}")
+    print("-- QR rejections")
+    print("   [[1,2],[2,4]] -> error (column 2 is a multiple of column 1)")
+    print("   [[1,2,3],[4,5,6]] -> error (rows < columns)")
+    print("-- Cholesky (A = L·Lᵀ)")
+    for label, m in [("[[4,12,-16],[12,37,-43],[-16,-43,98]]", [[4, 12, -16], [12, 37, -43], [-16, -43, 98]])]:
+        low, bad = cholesky_exact(m)
+        det = F(1)
+        for i in range(len(m)):
+            det *= low[i][i]
+        residual = max(
+            abs(sum(low[i][k] * low[j][k] for k in range(len(m))) - m[i][j])
+            for i in range(len(m)) for j in range(len(m))
+        )
+        print(f"-- {label}")
+        print("   L =", [[d10(x) for x in row] for row in low])
+        print("   det from L =", d10(det * det), "| max |A − L·Lᵀ| =", float(residual))
+    print("-- Cholesky rejections")
+    for label, m in [("[[1,2],[2,1]]", [[1, 2], [2, 1]]), ("[[1,2],[3,4]]", [[1, 2], [3, 4]])]:
+        low, bad = cholesky_exact(m)
+        print(f"   {label} -> {(None if low is None else 'factorized')}"
+              + (f" (pivot {d10(bad)})" if bad is not None else ""))
+    print("-- least squares (min ||A·x − b||)")
+    for label, a_m, b_v in [
+        ("fit [[1,1],[1,2],[1,3]] to [1,2,2]", [[1, 1], [1, 2], [1, 3]], [1, 2, 2]),
+        ("exact [[1,0],[0,1],[1,1]] to [2,3,5]", [[1, 0], [0, 1], [1, 1]], [2, 3, 5]),
+        ("degenerate [[1,2],[2,4],[3,6]] to [1,2,3]", [[1, 2], [2, 4], [3, 6]], [1, 2, 3]),
+    ]:
+        try:
+            x, norm, residual, normal = least_squares_exact(a_m, b_v)
+        except (KeyError, ZeroDivisionError):
+            print(f"   {label} -> error (rank-deficient: no unique minimizer)")
+            continue
+        print(f"-- {label}")
+        print("   x =", [d10(v) for v in x], "| exact:", [str(v) for v in x])
+        print("   residual vector =", [d10(v) for v in residual], "| exact:", [str(v) for v in residual])
+        print("   min ||A·x − b|| =", d10(norm), "| max |Aᵀ(A·x − b)| =", d10(normal))
+    print("   underdetermined [[1,2,3]] with [6] -> error (rows < columns)")
+    print()
+
+
 def check():
     """Self-checks: the analytic anchors must agree with the independent paths."""
     ok = True
@@ -422,6 +606,37 @@ def check():
     assert rank_exact(to_frac([[1, 2, 3], [4, 5, 6], [7, 8, 9]])) == 2
     assert solve_exact(to_frac([[2, 3], [1, -1]]), [8, 1])["solution"] == [F(11, 5), F(6, 5)]
     print("[check] exact legacy anchors hold (det/inverse/rank/solve in Fractions) OK")
+    # D: decomposition invariants — each factorization must reproduce the input
+    lu_matrix = to_frac([[2, 1, 1], [4, -6, 0], [-2, 7, 2]])
+    p, low, up, swaps, singular, det = lu_exact([[2, 1, 1], [4, -6, 0], [-2, 7, 2]])
+    permuted = [lu_matrix[i] for i in p]
+    assert mul(low, up) == permuted, "LU: L·U must equal P·A"
+    assert det == det_exact(lu_matrix), "LU: det from U must equal the exact determinant"
+    print(f"[check] LU exact: L·U == P·A, det {det} == exact determinant OK")
+    p4, low4, up4, swaps4, sing4, det4 = lu_exact([[0, 1, 0, 3], [2, 0, 0, 1], [0, 0, 1, 0], [0, 2, 0, 0]])
+    assert det4 == 12, "LU: the 4x4 pivot example must give det 12"
+    print(f"[check] LU 4x4 pivot example: det {det4} == 12, swaps {swaps4} OK")
+    q, r = qr_gram_schmidt([[1, 1], [1, 0], [0, 1]])
+    worst_qr = max(
+        abs(sum(q[i][k] * r[k][j] for k in range(2)) - float(v))
+        for i, row in enumerate([[1, 1], [1, 0], [0, 1]]) for j, v in enumerate(row)
+    )
+    worst_ortho = max(abs(q[0][0] * q[0][1] + q[1][0] * q[1][1] + q[2][0] * q[2][1]), abs(q[0][0] ** 2 + q[1][0] ** 2 + q[2][0] ** 2 - 1))
+    assert worst_qr < 1e-14 and worst_ortho < 1e-14, "QR: A == Q·R and QᵀQ == I"
+    print(f"[check] QR: max |A − Q·R| {worst_qr:.2e}, max |QᵀQ − I| {worst_ortho:.2e} OK")
+    chol_low, chol_bad = cholesky_exact([[4, 12, -16], [12, 37, -43], [-16, -43, 98]])
+    assert chol_bad is None
+    assert mul(chol_low, [[chol_low[j][i] for j in range(3)] for i in range(3)]) == to_frac([[4, 12, -16], [12, 37, -43], [-16, -43, 98]])
+    assert [chol_low[i][i] for i in range(3)] == [F(2), F(1), F(3)], "Cholesky: textbook L has diagonal 2,1,3"
+    print("[check] Cholesky exact: L·Lᵀ == A, diagonal (2,1,3) OK")
+    x, norm, residual, normal = least_squares_exact([[1, 1], [1, 2], [1, 3]], [1, 2, 2])
+    assert x == [F(2, 3), F(1, 2)], "least squares: x must be (2/3, 1/2)"
+    assert residual == [F(1, 6), F(-1, 3), F(1, 6)], "least squares: residual vector (A·x − b) must match"
+    assert normal == 0, "least squares: the residual must be orthogonal to the columns"
+    assert abs(norm - math.sqrt(1 / 6)) < 1e-15
+    x2, norm2, residual2, normal2 = least_squares_exact([[1, 0], [0, 1], [1, 1]], [2, 3, 5])
+    assert x2 == [F(2), F(3)] and norm2 == 0, "least squares: an exact system must fit exactly"
+    print("[check] least squares: normal-equation minimizer, orthogonal residual, exact fit OK")
     print("ALL CHECKS PASSED" if ok else "CHECKS FAILED")
     return 0 if ok else 1
 
@@ -430,6 +645,7 @@ def main():
     section_a()
     section_b()
     section_c()
+    section_d()
     if "--check" in sys.argv:
         return check()
     return 0

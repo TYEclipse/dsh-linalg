@@ -1,17 +1,21 @@
 /**
- * Tool definitions for dsh-linalg: four pure-math tools exposed via defineTool.
+ * Tool definitions for dsh-linalg: seven pure-math tools exposed via defineTool.
  *   matrix_multiply — matrix product A·B with dimension checking
- *   matrix_compute  — transpose / determinant / inverse / trace / rref
+ *   matrix_compute  — transpose / determinant / inverse / trace / rref / rank / power
+ *   matrix_decompose— LU / QR / Cholesky factors with measured residuals
+ *   matrix_eigen    — symmetric eigen-decomposition with residuals
+ *   least_squares   — minimizer of ||A·x − b|| for tall systems
  *   solve_linear    — solve Ax = b with unique / infinite / none classification
  *   vector_ops      — dot / cross / norm / projection / angle
  *
  * @module dsh-linalg/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { cleanMatrix, cleanValue, determinant, eigenSymmetric, inverse, multiply, parseMatrix, power, rankOf, rref, solve, trace, transpose, } from "./matrix.js";
+import { choleskyDecompose, cleanMatrix, cleanValue, determinant, eigenSymmetric, inverse, leastSquares, luDecompose, multiply, parseMatrix, power, qrDecompose, rankOf, rref, solve, trace, transpose, } from "./matrix.js";
 import { angleDeg, cross, dot, norm, parseVector, projection } from "./vector.js";
 const MATRIX_OPS = ['transpose', 'determinant', 'inverse', 'trace', 'rref', 'rank', 'power'];
 const VECTOR_OPS = ['dot', 'cross', 'norm', 'projection', 'angle'];
+const DECOMPOSE_KINDS = ['lu', 'qr', 'cholesky'];
 function renderMatrix(name, m) {
     return `${name} (${m.length}x${m[0]?.length ?? 0}):\n${m.map((row) => `  [${row.join(', ')}]`).join('\n')}`;
 }
@@ -38,6 +42,39 @@ function renderEigen(value) {
         .map((vec, index) => `  lambda${index + 1} = ${result.eigenvalues[index]}: [${vec.join(', ')}]`)
         .join('\n');
     return `${eigenvalues}\nsum = ${result.traceSum}, max residual = ${result.maxResidual}\neigenvectors (unit, one per row):\n${rows}`;
+}
+function renderDecompose(value) {
+    const result = value;
+    if (!result.valid)
+        return `matrix_decompose failed: ${result.error}`;
+    if (result.kind === 'lu') {
+        const l = result.l;
+        const u = result.u;
+        return `LU: P (row order) [${result.p.join(', ')}] — row i of P·A is row p[i] of A\n`
+            + `row swaps ${result.swaps}, sign ${result.sign}, singular ${result.singular}, det from U ${result.determinant}, max |P·A − L·U| ${result.residual}\n`
+            + `L (unit lower):\n${l.map((row) => `  [${row.join(', ')}]`).join('\n')}\n`
+            + `U (upper):\n${u.map((row) => `  [${row.join(', ')}]`).join('\n')}`;
+    }
+    if (result.kind === 'qr') {
+        const q = result.q;
+        const r = result.r;
+        return `QR (thin): Q is ${q.length}x${q[0]?.length ?? 0}, R is ${r.length}x${r[0]?.length ?? 0}, R diagonal positive\n`
+            + `max |A − Q·R| ${result.residual}, max |QᵀQ − I| ${result.orthogonality}\n`
+            + `Q (orthonormal columns):\n${q.map((row) => `  [${row.join(', ')}]`).join('\n')}\n`
+            + `R (upper):\n${r.map((row) => `  [${row.join(', ')}]`).join('\n')}`;
+    }
+    const l = result.l;
+    return `Cholesky: L (lower, positive diagonal), det from L ${result.determinant}, max |A − L·Lᵀ| ${result.residual}\n`
+        + l.map((row) => `  [${row.join(', ')}]`).join('\n');
+}
+function renderLeastSquares(value) {
+    const result = value;
+    if (!result.valid)
+        return `least_squares failed: ${result.error}`;
+    const solution = result.solution.map((v, i) => `x${i + 1} = ${v}`).join(', ');
+    return `least squares solution: ${solution}\n`
+        + `A is ${result.rows}x${result.columns} (full column rank), min ||A·x − b|| = ${result.residualNorm}, `
+        + `max |Aᵀ(A·x − b)| = ${result.normalEquationsResidual}`;
 }
 function renderSolve(value) {
     const result = value;
@@ -235,6 +272,130 @@ export function buildLinalgTools(config) {
             return out;
         },
     });
+    const matrix_decompose = defineTool({
+        name: 'matrix_decompose',
+        description: 'Factor a matrix and get the factors plus measured residuals: LU with partial pivoting '
+            + '(P·A = L·U, unit lower L, upper U, singular matrices flagged instead of silently wrong), thin QR with a '
+            + 'positive diagonal (A = Q·R, Q has orthonormal columns; linearly dependent columns are an error, not a '
+            + 'made-up completion), or Cholesky (A = L·Lᵀ, symmetric positive definite only — an asymmetric or '
+            + 'indefinite matrix is reported with the offending entry / pivot). Each answer carries max |factor product '
+            + '− A| so you can see how accurate it is. Pure arithmetic, no external calls.',
+        parameters: {
+            matrix: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } }, description: `Matrix as rows of numbers, e.g. [[4,12,-16],[12,37,-43],[-16,-43,98]]. Maximum dimension ${maxDim}x${maxDim}.` },
+            kind: { type: 'string', required: true, enum: [...DECOMPOSE_KINDS], description: 'Factorization to compute: lu (square, P·A = L·U) | qr (rows ≥ columns, A = Q·R) | cholesky (symmetric positive definite, A = L·Lᵀ).' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    kind: { type: 'string', required: true },
+                    error: { type: 'string' },
+                    p: { type: 'array', items: { type: 'number' } },
+                    l: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+                    u: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+                    q: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+                    r: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+                    swaps: { type: 'number' },
+                    sign: { type: 'number' },
+                    singular: { type: 'boolean' },
+                    determinant: { type: 'number' },
+                    residual: { type: 'number' },
+                    orthogonality: { type: 'number' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderDecompose(value) }],
+        },
+        async execute(args) {
+            const kind = args.kind;
+            const pm = parseMatrix(args.matrix, maxDim, roundPlaces);
+            if ('error' in pm)
+                return { valid: false, kind, error: pm.error };
+            const m = pm.matrix;
+            if (kind === 'lu') {
+                const lu = luDecompose(m, roundPlaces);
+                if ('error' in lu)
+                    return { valid: false, kind, error: lu.error };
+                const out = {
+                    valid: true,
+                    kind,
+                    p: lu.p,
+                    l: lu.l,
+                    u: lu.u,
+                    swaps: lu.swaps,
+                    sign: lu.sign,
+                    singular: lu.singular,
+                    determinant: lu.determinant,
+                    residual: lu.residual,
+                };
+                return out;
+            }
+            if (kind === 'qr') {
+                const qr = qrDecompose(m, roundPlaces);
+                if ('error' in qr)
+                    return { valid: false, kind, error: qr.error };
+                const out = { valid: true, kind, q: qr.q, r: qr.r, residual: qr.residual, orthogonality: qr.orthogonality };
+                return out;
+            }
+            if (kind === 'cholesky') {
+                const ch = choleskyDecompose(m, roundPlaces);
+                if ('error' in ch)
+                    return { valid: false, kind, error: ch.error };
+                const out = { valid: true, kind, l: ch.l, determinant: ch.determinant, residual: ch.residual };
+                return out;
+            }
+            return { valid: false, kind, error: `unknown factorization: ${kind} (expected lu | qr | cholesky)` };
+        },
+    });
+    const least_squares = defineTool({
+        name: 'least_squares',
+        description: 'Solve an overdetermined linear system in the least-squares sense: for A (m rows ≥ n columns) '
+            + 'and b, return the x that minimizes ||A·x − b||, the minimum residual norm itself, and '
+            + 'max |Aᵀ(A·x − b)| (zero means x really is the minimizer). Rank-deficient or underdetermined input is an '
+            + 'error — the answer would not be unique, so none is invented. Use this for curve-fitting and noisy '
+            + 'measurement problems instead of solving the normal equations by hand. Pure arithmetic, no external calls.',
+        parameters: {
+            a: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } }, description: `Coefficient matrix A as rows of numbers, e.g. [[1,1],[1,2],[1,3]]. Maximum dimension ${maxDim}x${maxDim}.` },
+            b: { type: 'array', required: true, items: { type: 'number' }, description: 'Constant vector b; one entry per row of A.' },
+        },
+        output: {
+            schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                    valid: { type: 'boolean', required: true },
+                    error: { type: 'string' },
+                    rows: { type: 'number' },
+                    columns: { type: 'number' },
+                    solution: { type: 'array', items: { type: 'number' } },
+                    residualNorm: { type: 'number' },
+                    normalEquationsResidual: { type: 'number' },
+                },
+            },
+            render: (_args, value) => [{ type: 'text', text: renderLeastSquares(value) }],
+        },
+        async execute(args) {
+            const pa = parseMatrix(args.a, maxDim, roundPlaces);
+            if ('error' in pa)
+                return { valid: false, error: `A: ${pa.error}` };
+            const pb = parseVector(args.b, maxDim);
+            if ('error' in pb)
+                return { valid: false, error: `b: ${pb.error}` };
+            const outcome = leastSquares(pa.matrix, pb.vector, roundPlaces);
+            if ('error' in outcome)
+                return { valid: false, error: outcome.error };
+            const out = {
+                valid: true,
+                rows: outcome.rows,
+                columns: outcome.columns,
+                solution: outcome.solution,
+                residualNorm: outcome.residualNorm,
+                normalEquationsResidual: outcome.normalEquationsResidual,
+            };
+            return out;
+        },
+    });
     const solve_linear = defineTool({
         name: 'solve_linear',
         description: 'Solve the linear system Ax = b. Classifies the result as a unique solution, infinitely many '
@@ -365,6 +526,6 @@ export function buildLinalgTools(config) {
             }
         },
     });
-    return { matrix_multiply, matrix_compute, matrix_eigen, solve_linear, vector_ops };
+    return { matrix_multiply, matrix_compute, matrix_decompose, matrix_eigen, least_squares, solve_linear, vector_ops };
 }
 //# sourceMappingURL=tools.js.map

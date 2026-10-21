@@ -511,4 +511,276 @@ export function eigenSymmetric(m, roundPlaces) {
         traceSum: cleanValue(traceSum, roundPlaces),
     };
 }
+/**
+ * LU factorization with partial pivoting: P·A = L·U, L unit lower triangular,
+ * U upper triangular. Singular matrices are still factored — zero pivot columns
+ * are left untouched (factors stay 0) and reported through `singular`, so callers
+ * never receive a silently wrong factor pair.
+ */
+export function luDecompose(m, roundPlaces) {
+    const n = rowsOf(m);
+    if (n !== colsOf(m))
+        return { error: `LU decomposition requires a square matrix; got ${n}x${colsOf(m)}` };
+    const a = m.map((row) => [...row]);
+    const p = Array.from({ length: n }, (_, i) => i);
+    const l = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+    let swaps = 0;
+    let singular = false;
+    for (let col = 0; col < n; col++) {
+        let pivotRow = col;
+        let best = Math.abs(a[col]?.[col] ?? 0);
+        for (let r = col + 1; r < n; r++) {
+            const mag = Math.abs(a[r]?.[col] ?? 0);
+            if (mag > best) {
+                best = mag;
+                pivotRow = r;
+            }
+        }
+        if (best < 1e-12) {
+            // The whole remaining column is zero: nothing to eliminate, the matrix is
+            // singular, and the (zero) pivot stays where it is.
+            singular = true;
+            continue;
+        }
+        if (pivotRow !== col) {
+            const tmpRow = a[pivotRow];
+            a[pivotRow] = a[col];
+            a[col] = tmpRow;
+            const tmpIndex = p[pivotRow];
+            p[pivotRow] = p[col];
+            p[col] = tmpIndex;
+            // multipliers already computed for these two rows belong to the rows now
+            for (let j = 0; j < col; j++) {
+                const tmp = l[pivotRow][j];
+                l[pivotRow][j] = l[col][j];
+                l[col][j] = tmp;
+            }
+            swaps++;
+        }
+        const pivot = a[col]?.[col] ?? 0;
+        for (let r = col + 1; r < n; r++) {
+            const factor = (a[r]?.[col] ?? 0) / pivot;
+            if (factor === 0)
+                continue;
+            l[r][col] = factor;
+            for (let c = col; c < n; c++)
+                a[r][c] = (a[r]?.[c] ?? 0) - factor * (a[col]?.[c] ?? 0);
+        }
+    }
+    let residual = 0;
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+            let sum = 0;
+            for (let k = 0; k < n; k++)
+                sum += (l[i]?.[k] ?? 0) * (a[k]?.[j] ?? 0);
+            residual = Math.max(residual, Math.abs(sum - (m[p[i]]?.[j] ?? 0)));
+        }
+    }
+    const sign = swaps % 2 === 0 ? 1 : -1;
+    let detFromU = sign;
+    for (let i = 0; i < n; i++)
+        detFromU *= a[i]?.[i] ?? 0;
+    return {
+        p,
+        l: cleanMatrix(l, roundPlaces),
+        u: cleanMatrix(a, roundPlaces),
+        swaps,
+        sign,
+        singular,
+        determinant: cleanValue(detFromU, roundPlaces),
+        residual: cleanValue(residual, roundPlaces),
+    };
+}
+/**
+ * Thin QR via modified Gram–Schmidt with a positive diagonal R. The sign
+ * convention makes the factorization unique for full-column-rank input, so
+ * independent implementations can be compared entry by entry.
+ * Returns { error } when the columns are linearly dependent (QR without column
+ * pivoting cannot be completed) — it never invents an orthonormal completion.
+ */
+function qrFactors(m) {
+    const rows = rowsOf(m);
+    const cols = colsOf(m);
+    const q = Array.from({ length: rows }, () => Array.from({ length: cols }, () => 0));
+    const r = Array.from({ length: cols }, () => Array.from({ length: cols }, () => 0));
+    for (let j = 0; j < cols; j++) {
+        const v = [];
+        for (let i = 0; i < rows; i++)
+            v.push(m[i]?.[j] ?? 0);
+        for (let k = 0; k < j; k++) {
+            let dot = 0;
+            for (let i = 0; i < rows; i++)
+                dot += (q[i]?.[k] ?? 0) * (v[i] ?? 0);
+            r[k][j] = dot;
+            for (let i = 0; i < rows; i++)
+                v[i] = (v[i] ?? 0) - dot * (q[i]?.[k] ?? 0);
+        }
+        let squared = 0;
+        for (const x of v)
+            squared += x * x;
+        const norm = Math.sqrt(squared);
+        r[j][j] = norm;
+        if (!(norm > 1e-12)) {
+            return {
+                error: `columns are linearly dependent: column ${j + 1} lies in the span of the previous ones (rank below ${cols}), so QR without column pivoting cannot be completed`,
+            };
+        }
+        for (let i = 0; i < rows; i++)
+            q[i][j] = (v[i] ?? 0) / norm;
+    }
+    return { q, r };
+}
+/** Thin QR decomposition of an m×n matrix with m ≥ n; A = Q·R. */
+export function qrDecompose(m, roundPlaces) {
+    const rows = rowsOf(m);
+    const cols = colsOf(m);
+    if (rows < cols) {
+        return { error: `QR decomposition requires at least as many rows as columns; got ${rows}x${cols} (use least_squares only for tall systems, and rref/rank here)` };
+    }
+    const factors = qrFactors(m);
+    if ('error' in factors)
+        return { error: factors.error };
+    const { q, r } = factors;
+    let residual = 0;
+    for (let i = 0; i < rows; i++) {
+        for (let j = 0; j < cols; j++) {
+            let sum = 0;
+            for (let k = 0; k < cols; k++)
+                sum += (q[i]?.[k] ?? 0) * (r[k]?.[j] ?? 0);
+            residual = Math.max(residual, Math.abs(sum - (m[i]?.[j] ?? 0)));
+        }
+    }
+    let orthogonality = 0;
+    for (let a = 0; a < cols; a++) {
+        for (let b = 0; b < cols; b++) {
+            let dot = 0;
+            for (let i = 0; i < rows; i++)
+                dot += (q[i]?.[a] ?? 0) * (q[i]?.[b] ?? 0);
+            orthogonality = Math.max(orthogonality, Math.abs(dot - (a === b ? 1 : 0)));
+        }
+    }
+    return {
+        q: cleanMatrix(q, roundPlaces),
+        r: cleanMatrix(r, roundPlaces),
+        residual: cleanValue(residual, roundPlaces),
+        orthogonality: cleanValue(orthogonality, roundPlaces),
+    };
+}
+/**
+ * Cholesky factorization A = L·Lᵀ for a symmetric positive definite matrix.
+ * Asymmetric input, or a non-positive pivot at step k, is reported as an error
+ * naming the entry / pivot — never as a partial factor.
+ */
+export function choleskyDecompose(m, roundPlaces) {
+    const n = rowsOf(m);
+    if (n !== colsOf(m))
+        return { error: `Cholesky decomposition requires a square matrix; got ${n}x${colsOf(m)}` };
+    let scale = 0;
+    for (const row of m)
+        for (const v of row)
+            scale = Math.max(scale, Math.abs(v));
+    const symTol = 1e-9 * (1 + scale);
+    for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+            const diff = Math.abs((m[i]?.[j] ?? 0) - (m[j]?.[i] ?? 0));
+            if (diff > symTol) {
+                return {
+                    error: `Cholesky decomposition requires a symmetric matrix: (${i},${j}) = ${m[i]?.[j]} but (${j},${i}) = ${m[j]?.[i]}, difference ${diff} exceeds tolerance ${symTol}`,
+                };
+            }
+        }
+    }
+    const l = Array.from({ length: n }, () => Array.from({ length: n }, () => 0));
+    for (let j = 0; j < n; j++) {
+        let diagonal = m[j]?.[j] ?? 0;
+        for (let k = 0; k < j; k++)
+            diagonal -= (l[j]?.[k] ?? 0) ** 2;
+        if (!(diagonal > 1e-12)) {
+            return {
+                error: `matrix is not positive definite: pivot ${j + 1} is ${cleanValue(diagonal, roundPlaces)} (must be > 0 for a Cholesky factorization)`,
+            };
+        }
+        const ljj = Math.sqrt(diagonal);
+        l[j][j] = ljj;
+        for (let i = j + 1; i < n; i++) {
+            let sum = m[i]?.[j] ?? 0;
+            for (let k = 0; k < j; k++)
+                sum -= (l[i]?.[k] ?? 0) * (l[j]?.[k] ?? 0);
+            l[i][j] = sum / ljj;
+        }
+    }
+    let residual = 0;
+    for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n; j++) {
+            let sum = 0;
+            for (let k = 0; k < n; k++)
+                sum += (l[i]?.[k] ?? 0) * (l[j]?.[k] ?? 0);
+            residual = Math.max(residual, Math.abs(sum - (m[i]?.[j] ?? 0)));
+        }
+    }
+    let detFromL = 1;
+    for (let i = 0; i < n; i++)
+        detFromL *= l[i]?.[i] ?? 0;
+    return {
+        l: cleanMatrix(l, roundPlaces),
+        determinant: cleanValue(detFromL * detFromL, roundPlaces),
+        residual: cleanValue(residual, roundPlaces),
+    };
+}
+/**
+ * Least-squares solution of a tall system (m ≥ n) via the thin QR
+ * factorization: x = R⁻¹·Qᵀ·b. Rank-deficient input is reported as an error —
+ * the minimizer is then not unique and is not guessed.
+ */
+export function leastSquares(a, b, roundPlaces) {
+    const rows = rowsOf(a);
+    const cols = colsOf(a);
+    if (b.length !== rows)
+        return { error: `b has ${b.length} entries; expected ${rows} (one per row of A)` };
+    if (rows < cols) {
+        return { error: `least squares needs at least as many rows as columns; got ${rows}x${cols} (underdetermined: infinitely many exact solutions, none of them is "the" least-squares solution)` };
+    }
+    const factors = qrFactors(a);
+    if ('error' in factors) {
+        const rank = rankOf(a, roundPlaces);
+        return { error: `A has rank ${rank} of ${cols} columns (${factors.error}); the least-squares solution is not unique, so none is reported` };
+    }
+    const { q, r } = factors;
+    const projected = Array.from({ length: cols }, (_, j) => {
+        let sum = 0;
+        for (let i = 0; i < rows; i++)
+            sum += (q[i]?.[j] ?? 0) * (b[i] ?? 0);
+        return sum;
+    });
+    const solution = Array.from({ length: cols }, () => 0);
+    for (let i = cols - 1; i >= 0; i--) {
+        let sum = projected[i] ?? 0;
+        for (let j = i + 1; j < cols; j++)
+            sum -= (r[i]?.[j] ?? 0) * (solution[j] ?? 0);
+        solution[i] = sum / (r[i]?.[i] ?? 1);
+    }
+    const residualVector = Array.from({ length: rows }, (_, i) => {
+        let sum = 0;
+        for (let j = 0; j < cols; j++)
+            sum += (a[i]?.[j] ?? 0) * (solution[j] ?? 0);
+        return sum - (b[i] ?? 0);
+    });
+    let squared = 0;
+    for (const value of residualVector)
+        squared += value * value;
+    let normalResidual = 0;
+    for (let j = 0; j < cols; j++) {
+        let dot = 0;
+        for (let i = 0; i < rows; i++)
+            dot += (a[i]?.[j] ?? 0) * (residualVector[i] ?? 0);
+        normalResidual = Math.max(normalResidual, Math.abs(dot));
+    }
+    return {
+        solution: cleanMatrix([solution], roundPlaces)[0] ?? [],
+        residualNorm: cleanValue(Math.sqrt(squared), roundPlaces),
+        normalEquationsResidual: cleanValue(normalResidual, roundPlaces),
+        columns: cols,
+        rows,
+    };
+}
 //# sourceMappingURL=matrix.js.map

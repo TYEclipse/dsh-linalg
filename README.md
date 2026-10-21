@@ -1,6 +1,6 @@
 # dsh-linalg
 
-Linear algebra toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): matrix multiply, determinant, inverse, trace, transpose, reduced row echelon form, rank, integer matrix powers, a linear system solver that classifies unique / infinitely many / no solutions, a symmetric eigen-decomposition with measured residuals, and vector operations (dot / cross / norm / projection / angle).
+Linear algebra toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): matrix multiply, determinant, inverse, trace, transpose, reduced row echelon form, rank, integer matrix powers, a linear system solver that classifies unique / infinitely many / no solutions, a symmetric eigen-decomposition with measured residuals, matrix factorizations (LU with partial pivoting, thin QR, Cholesky) with measured reconstruction residuals, a least-squares solver for overdetermined systems, and vector operations (dot / cross / norm / projection / angle).
 
 Zero runtime dependencies, pure local arithmetic — no network, no processes, no eval.
 
@@ -22,7 +22,9 @@ Replace `web` with your profile name. (Requires `pnpm` on your PATH.)
 |---|---|
 | `matrix_multiply` | Multiply two matrices A·B with dimension checking |
 | `matrix_compute` | One operation per call: `transpose`, `determinant`, `inverse`, `trace`, `rref`, `rank`, `power` (integer exponent) |
+| `matrix_decompose` | One factorization per call: `lu` (P·A = L·U, singular flagged), `qr` (thin A = Q·R, R diagonal positive) or `cholesky` (A = L·Lᵀ, symmetric positive definite only) — each with a measured reconstruction residual |
 | `matrix_eigen` | Eigen-decomposition of a real symmetric matrix: all eigenvalues (descending) + unit eigenvectors + measured residual |
+| `least_squares` | Minimizer of ‖A·x − b‖ for overdetermined systems, plus the minimum residual norm and max ‖Aᵀ(A·x − b)‖ (rank-deficient / underdetermined input is an error) |
 | `solve_linear` | Solve Ax = b; classifies unique / infinite (particular + nullspace basis + free-variable count) / no solution |
 | `vector_ops` | `dot`, `cross` (3D), `norm`, `projection`, `angle` (degrees) |
 
@@ -91,6 +93,38 @@ matrix_eigen(matrix=[[2,1],[1,2]])
 The 4x4 tridiagonal `[[2,-1,0,0],[-1,2,-1,0],[0,-1,2,-1],[0,0,-1,2]]` gives
 `3.6180339887, 2.6180339887, 1.3819660113, 0.3819660113` — the closed form `2 − 2·cos(kπ/5)`.
 
+LU factorization (row permuted, one swap):
+
+```
+matrix_decompose(matrix=[[2,1,1],[4,-6,0],[-2,7,2]], kind="lu")
+→ p = [1, 0, 2]  (row i of P·A is row p[i] of A)
+  swaps = 1, sign = -1, singular = false, det from U = -16
+  L = [[1,0,0],[0.5,1,0],[-0.5,1,1]]
+  U = [[4,-6,0],[0,4,1],[0,0,1]]
+```
+
+Thin QR (R diagonal positive, so the factorization is unique):
+
+```
+matrix_decompose(matrix=[[3,0],[4,5]], kind="qr")
+→ Q = [[0.6,-0.8],[0.8,0.6]]   R = [[5,4],[0,3]]
+```
+
+Cholesky of a symmetric positive definite matrix:
+
+```
+matrix_decompose(matrix=[[4,12,-16],[12,37,-43],[-16,-43,98]], kind="cholesky")
+→ L = [[2,0,0],[6,1,0],[-8,5,3]], det from L = 36
+```
+
+Least squares — fit `y = a + b·x` through (1,1), (2,2), (3,2):
+
+```
+least_squares(a=[[1,1],[1,2],[1,3]], b=[1,2,2])
+→ x1 = 0.6666666667, x2 = 0.5
+  min ‖A·x − b‖ = 0.4082482905, max ‖Aᵀ(A·x − b)‖ = 0
+```
+
 ## Numerical behaviour
 
 - Gaussian elimination with partial pivoting (largest-magnitude pivot per column).
@@ -99,6 +133,8 @@ The 4x4 tridiagonal `[[2,-1,0,0],[-1,2,-1,0],[0,-1,2,-1],[0,0,-1,2]]` gives
 - Singular inverse requests fail cleanly with an error message; inconsistent systems return `kind: "none"` with the reducing row equation.
 - `matrix_eigen` runs the cyclic Jacobi method in full double precision: every eigenvector is unit length, eigenvectors are signed so the leading non-zero component is positive, and the reply carries `maxResidual` = the largest `|A·v − λ·v|` entry actually measured. Non-square or non-symmetric input, and non-convergence, are reported as errors — never a guessed spectrum.
 - `power` uses binary exponentiation; negative exponents invert first (and fail cleanly on singular input), exponents are limited to the integer range −64…64.
+- `matrix_decompose` reports the residual it actually measured (`max |P·A − L·U|`, `max |A − Q·R|`, `max |A − L·Lᵀ|`). A singular matrix still gets an LU pair, but `singular: true` is set and the determinant from U is 0; linearly dependent columns make QR fail (no orthonormal completion is invented); an asymmetric or indefinite matrix is rejected by Cholesky with the offending entry / pivot spelled out.
+- `least_squares` solves through the thin QR factorization (not the normal equations, which square the condition number) and returns both the minimum residual norm and `max |Aᵀ(A·x − b)|` — zero proves the answer really is the minimizer. Rank-deficient or underdetermined input is an error rather than one arbitrary minimizer.
 
 ## Configuration
 

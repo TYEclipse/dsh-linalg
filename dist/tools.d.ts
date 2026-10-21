@@ -1,7 +1,10 @@
 /**
- * Tool definitions for dsh-linalg: four pure-math tools exposed via defineTool.
+ * Tool definitions for dsh-linalg: seven pure-math tools exposed via defineTool.
  *   matrix_multiply — matrix product A·B with dimension checking
- *   matrix_compute  — transpose / determinant / inverse / trace / rref
+ *   matrix_compute  — transpose / determinant / inverse / trace / rref / rank / power
+ *   matrix_decompose— LU / QR / Cholesky factors with measured residuals
+ *   matrix_eigen    — symmetric eigen-decomposition with residuals
+ *   least_squares   — minimizer of ||A·x − b|| for tall systems
  *   solve_linear    — solve Ax = b with unique / infinite / none classification
  *   vector_ops      — dot / cross / norm / projection / angle
  *
@@ -12,7 +15,9 @@ import type { ResolvedConfig } from './index.ts';
 export interface ToolSet {
     matrix_multiply: ToolDefinition;
     matrix_compute: ToolDefinition;
+    matrix_decompose: ToolDefinition;
     matrix_eigen: ToolDefinition;
+    least_squares: ToolDefinition;
     solve_linear: ToolDefinition;
     vector_ops: ToolDefinition;
 }

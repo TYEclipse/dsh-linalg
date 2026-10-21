@@ -100,4 +100,82 @@ export interface EigenOutcome {
 export declare function eigenSymmetric(m: Matrix, roundPlaces: number): {
     error: string;
 } | EigenOutcome;
+/** Outcome of an LU factorization with partial pivoting: P·A = L·U. */
+export interface LuOutcome {
+    /** Row order of the permutation: row i of P·A is row p[i] of A. */
+    p: number[];
+    /** Unit lower triangular factor (unit diagonal). */
+    l: Matrix;
+    /** Upper triangular factor. */
+    u: Matrix;
+    /** Number of row swaps performed. */
+    swaps: number;
+    /** +1 when the swap count is even, −1 otherwise (sign of the determinant). */
+    sign: number;
+    /** True when some pivot column was numerically zero — the matrix is singular. */
+    singular: boolean;
+    /** sign × product of the U diagonal (self-check against {@link determinant}). */
+    determinant: number;
+    /** max |P·A − L·U| over every entry (raw doubles, then rounded once). */
+    residual: number;
+}
+/**
+ * LU factorization with partial pivoting: P·A = L·U, L unit lower triangular,
+ * U upper triangular. Singular matrices are still factored — zero pivot columns
+ * are left untouched (factors stay 0) and reported through `singular`, so callers
+ * never receive a silently wrong factor pair.
+ */
+export declare function luDecompose(m: Matrix, roundPlaces: number): LuOutcome | {
+    error: string;
+};
+export interface QrOutcome {
+    /** Thin Q (m×n): its columns are orthonormal. */
+    q: Matrix;
+    /** Upper triangular R (n×n) with a positive diagonal. */
+    r: Matrix;
+    /** max |A − Q·R| over every entry. */
+    residual: number;
+    /** max |QᵀQ − I| over every entry (how orthogonal Q really is). */
+    orthogonality: number;
+}
+/** Thin QR decomposition of an m×n matrix with m ≥ n; A = Q·R. */
+export declare function qrDecompose(m: Matrix, roundPlaces: number): QrOutcome | {
+    error: string;
+};
+export interface CholeskyOutcome {
+    /** Lower triangular factor with a positive diagonal. */
+    l: Matrix;
+    /** det(A) from the factor: (∏ L_ii)². */
+    determinant: number;
+    /** max |A − L·Lᵀ| over every entry. */
+    residual: number;
+}
+/**
+ * Cholesky factorization A = L·Lᵀ for a symmetric positive definite matrix.
+ * Asymmetric input, or a non-positive pivot at step k, is reported as an error
+ * naming the entry / pivot — never as a partial factor.
+ */
+export declare function choleskyDecompose(m: Matrix, roundPlaces: number): CholeskyOutcome | {
+    error: string;
+};
+export interface LeastSquaresOutcome {
+    /** The minimizer of ||A·x − b||. */
+    solution: number[];
+    /** The minimum itself: ||A·x − b||. */
+    residualNorm: number;
+    /** max |Aᵀ(A·x − b)| — zero (to tolerance) proves x really is the minimizer. */
+    normalEquationsResidual: number;
+    /** Number of columns (all of them are independent when no error is returned). */
+    columns: number;
+    /** Number of rows. */
+    rows: number;
+}
+/**
+ * Least-squares solution of a tall system (m ≥ n) via the thin QR
+ * factorization: x = R⁻¹·Qᵀ·b. Rank-deficient input is reported as an error —
+ * the minimizer is then not unique and is not guessed.
+ */
+export declare function leastSquares(a: Matrix, b: number[], roundPlaces: number): LeastSquaresOutcome | {
+    error: string;
+};
 //# sourceMappingURL=matrix.d.ts.map
