@@ -1,8 +1,9 @@
 /**
- * Tool definitions for dsh-linalg: seven pure-math tools exposed via defineTool.
+ * Tool definitions for dsh-linalg: eight pure-math tools exposed via defineTool.
  *   matrix_multiply — matrix product A·B with dimension checking
  *   matrix_compute  — transpose / determinant / inverse / trace / rref / rank / power
  *   matrix_decompose— LU / QR / Cholesky factors with measured residuals
+ *   matrix_svd      — singular values, rank, condition number, optional pseudo-inverse
  *   matrix_eigen    — symmetric eigen-decomposition with residuals
  *   least_squares   — minimizer of ||A·x − b|| for tall systems
  *   solve_linear    — solve Ax = b with unique / infinite / none classification
@@ -28,6 +29,7 @@ import {
   rankOf,
   rref,
   solve,
+  svdDecompose,
   trace,
   transpose,
   type Matrix,
@@ -40,6 +42,7 @@ export interface ToolSet {
   matrix_multiply: ToolDefinition
   matrix_compute: ToolDefinition
   matrix_decompose: ToolDefinition
+  matrix_svd: ToolDefinition
   matrix_eigen: ToolDefinition
   least_squares: ToolDefinition
   solve_linear: ToolDefinition
@@ -100,6 +103,30 @@ interface DecomposeResult {
   residual?: number
   /** QR only: max |QᵀQ − I|. */
   orthogonality?: number
+}
+
+interface SvdResult {
+  valid: boolean
+  error?: string
+  rows?: number
+  columns?: number
+  /** Every singular value, descending (one per column). */
+  singularValues?: number[]
+  rank?: number
+  singular?: boolean
+  /** Left singular vectors as columns (rows × rank). */
+  u?: Matrix
+  /** Right singular vectors as columns (columns × rank). */
+  v?: Matrix
+  residual?: number
+  orthogonality?: number
+  sweeps?: number
+  rotations?: number
+  /** σ₁/σ_rank; absent (with a note) when the matrix is rank-deficient. */
+  conditionNumber?: number
+  pseudoInverse?: Matrix
+  pseudoInverseResidual?: number
+  note?: string
 }
 
 interface LeastSquaresResult {
@@ -199,6 +226,31 @@ function renderDecompose(value: unknown): string {
   const l = result.l as Matrix
   return `Cholesky: L (lower, positive diagonal), det from L ${result.determinant}, max |A − L·Lᵀ| ${result.residual}\n`
     + l.map((row) => `  [${row.join(', ')}]`).join('\n')
+}
+
+function renderSvd(value: unknown): string {
+  const result = value as SvdResult
+  if (!result.valid) return `matrix_svd failed: ${result.error}`
+  const renderColumns = (matrix: Matrix): string => {
+    if ((matrix[0]?.length ?? 0) === 0) return '(none: rank 0)'
+    return matrix[0]!.map((_, t) => `[${matrix.map((row) => row[t]).join(', ')}]`).join(' ')
+  }
+  const lines = [
+    `singular values (descending): ${(result.singularValues as number[]).join(', ')}`,
+    `rank ${result.rank} of ${Math.min(result.rows ?? 0, result.columns ?? 0)}, singular ${result.singular}, `
+      + `condition number ${result.conditionNumber === undefined ? 'not reported' : result.conditionNumber}`,
+    `${result.sweeps} sweeps, ${result.rotations} rotations, max |A − U·Σ·Vᵀ| ${result.residual}, `
+      + `max orthogonality error ${result.orthogonality}`,
+    `left singular vectors (as columns): ${renderColumns(result.u as Matrix)}`,
+    `right singular vectors (as columns): ${renderColumns(result.v as Matrix)}`,
+  ]
+  if (result.note !== undefined) lines.push(result.note)
+  if (result.pseudoInverse !== undefined) {
+    lines.push(`pseudo-inverse A⁺ (${result.columns}x${result.rows}):`)
+    for (const row of result.pseudoInverse) lines.push(`  [${row.join(', ')}]`)
+    lines.push(`max |A·A⁺·A − A| ${result.pseudoInverseResidual}`)
+  }
+  return lines.join('\n')
 }
 
 function renderLeastSquares(value: unknown): string {
@@ -470,6 +522,72 @@ export function buildLinalgTools(config: ResolvedConfig): ToolSet {
     },
   })
 
+  const matrix_svd = defineTool({
+    name: 'matrix_svd',
+    description: 'Singular value decomposition A = U·Σ·Vᵀ (one-sided Jacobi): every singular value in descending '
+      + 'order, the numerical rank, the condition number σ₁/σ_rank, thin U and V (vectors given as columns), and '
+      + 'measured quality checks max |A − U·Σ·Vᵀ| and the largest entry of |UᵀU − I| / |VᵀV − I|. Rank deficiency '
+      + 'is reported honestly: the condition number is omitted with a note (it would be infinite) instead of a huge '
+      + 'made-up number, and the factors span only the retained directions. Set pseudoInverse=true to also get the '
+      + 'Moore–Penrose pseudo-inverse A⁺ together with max |A·A⁺·A − A|. Any rectangular shape; non-convergence is '
+      + 'an error rather than an inaccurate answer. Pure arithmetic, no external calls.',
+    parameters: {
+      matrix: { type: 'array', required: true, items: { type: 'array', items: { type: 'number' } }, description: `Matrix as rows of numbers, e.g. [[1,2],[3,4],[5,6]]. Maximum dimension ${maxDim}x${maxDim}.` },
+      pseudoInverse: { type: 'boolean', description: 'Also return the Moore–Penrose pseudo-inverse A⁺ (columns×rows) and max |A·A⁺·A − A|. Default false.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          valid: { type: 'boolean', required: true },
+          error: { type: 'string' },
+          rows: { type: 'number' },
+          columns: { type: 'number' },
+          singularValues: { type: 'array', items: { type: 'number' } },
+          rank: { type: 'number' },
+          singular: { type: 'boolean' },
+          u: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+          v: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+          residual: { type: 'number' },
+          orthogonality: { type: 'number' },
+          sweeps: { type: 'number' },
+          rotations: { type: 'number' },
+          conditionNumber: { type: 'number' },
+          pseudoInverse: { type: 'array', items: { type: 'array', items: { type: 'number' } } },
+          pseudoInverseResidual: { type: 'number' },
+          note: { type: 'string' },
+        },
+      },
+      render: (_args: { matrix: Matrix; pseudoInverse?: boolean }, value: unknown) => [{ type: 'text', text: renderSvd(value) }],
+    },
+    async execute(args: { matrix: Matrix; pseudoInverse?: boolean }): Promise<SvdResult> {
+      const pm = parseMatrix(args.matrix, maxDim, roundPlaces)
+      if ('error' in pm) return { valid: false, error: pm.error }
+      const outcome = svdDecompose(pm.matrix, roundPlaces, args.pseudoInverse === true)
+      if ('error' in outcome) return { valid: false, error: outcome.error }
+      const out: SvdResult = {
+        valid: true,
+        rows: outcome.rows,
+        columns: outcome.columns,
+        singularValues: outcome.singularValues,
+        rank: outcome.rank,
+        singular: outcome.singular,
+        u: outcome.u,
+        v: outcome.v,
+        residual: outcome.residual,
+        orthogonality: outcome.orthogonality,
+        sweeps: outcome.sweeps,
+        rotations: outcome.rotations,
+      }
+      if (outcome.conditionNumber !== undefined) out.conditionNumber = outcome.conditionNumber
+      if (outcome.pseudoInverse !== undefined) out.pseudoInverse = outcome.pseudoInverse
+      if (outcome.pseudoInverseResidual !== undefined) out.pseudoInverseResidual = outcome.pseudoInverseResidual
+      if (outcome.note !== undefined) out.note = outcome.note
+      return out
+    },
+  })
+
   const least_squares = defineTool({
     name: 'least_squares',
     description: 'Solve an overdetermined linear system in the least-squares sense: for A (m rows ≥ n columns) '
@@ -632,5 +750,5 @@ export function buildLinalgTools(config: ResolvedConfig): ToolSet {
     },
   })
 
-  return { matrix_multiply, matrix_compute, matrix_decompose, matrix_eigen, least_squares, solve_linear, vector_ops }
+  return { matrix_multiply, matrix_compute, matrix_decompose, matrix_svd, matrix_eigen, least_squares, solve_linear, vector_ops }
 }

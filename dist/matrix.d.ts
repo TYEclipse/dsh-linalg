@@ -178,4 +178,50 @@ export interface LeastSquaresOutcome {
 export declare function leastSquares(a: Matrix, b: number[], roundPlaces: number): LeastSquaresOutcome | {
     error: string;
 };
+export interface SvdOutcome {
+    /** Number of rows of the input. */
+    rows: number;
+    /** Number of columns of the input. */
+    columns: number;
+    /** Every singular value, descending (one per column of the input). */
+    singularValues: number[];
+    /** How many singular values exceed the rank tolerance. */
+    rank: number;
+    /** True when rank < min(rows, columns). */
+    singular: boolean;
+    /** Left singular vectors of the non-zero singular values, as COLUMNS (rows × rank). */
+    u: Matrix;
+    /** Right singular vectors of the non-zero singular values, as COLUMNS (columns × rank). */
+    v: Matrix;
+    /** max |A − U·Σ·Vᵀ| over the retained rank (honest accuracy report). */
+    residual: number;
+    /** max entry of |UᵀU − I| and |VᵀV − I| (should be ~0). */
+    orthogonality: number;
+    /** Sweeps of the one-sided Jacobi iteration actually performed. */
+    sweeps: number;
+    /** Column-pair rotations applied. */
+    rotations: number;
+    /** σ₁/σ_rank — present only when the matrix has full rank (a singular matrix has no finite value). */
+    conditionNumber?: number;
+    /** Moore–Penrose pseudo-inverse A⁺ (columns × rows), only when requested. */
+    pseudoInverse?: Matrix;
+    /** max |A·A⁺·A − A| — zero (to tolerance) proves the pseudo-inverse satisfies the defining identity. */
+    pseudoInverseResidual?: number;
+    /** Present when a quantity is deliberately absent (e.g. the condition number of a singular matrix). */
+    note?: string;
+}
+/**
+ * Singular value decomposition A = U·Σ·Vᵀ via the one-sided Jacobi method:
+ * pairs of columns are rotated until they are mutually orthogonal, so the
+ * column norms are the singular values and the accumulated rotations are the
+ * right singular vectors. Rank comes from the usual σ > max(m,n)·ε·σ₁
+ * tolerance; a rank-deficient matrix gets no condition number (the honest
+ * answer is "infinite", not a huge number).
+ *
+ * `roundPlaces` only affects reported numbers; the iteration runs in full
+ * double precision.
+ */
+export declare function svdDecompose(m: Matrix, roundPlaces: number, wantPseudoInverse?: boolean): SvdOutcome | {
+    error: string;
+};
 //# sourceMappingURL=matrix.d.ts.map

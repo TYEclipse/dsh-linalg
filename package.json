@@ -1,7 +1,7 @@
 {
   "name": "dsh-linalg",
-  "version": "0.3.0",
-  "description": "Linear algebra toolbox for DeepSeek Harness (dsh): matrix multiply, determinant, inverse, trace, transpose, RREF, rank, integer powers, a linear system solver with unique/infinite/none classification, symmetric eigen-decomposition, LU / QR / Cholesky factorizations with measured residuals, and a least-squares solver for overdetermined systems — zero runtime dependencies",
+  "version": "0.4.0",
+  "description": "Linear algebra toolbox for DeepSeek Harness (dsh): matrix multiply, determinant, inverse, trace, transpose, RREF, rank, integer powers, a linear system solver with unique/infinite/none classification, symmetric eigen-decomposition, LU / QR / Cholesky factorizations with measured residuals, a singular value decomposition with rank and condition number (plus an optional pseudo-inverse), and a least-squares solver for overdetermined systems — zero runtime dependencies",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,7 +33,11 @@
     "lu-decomposition",
     "cholesky",
     "least-squares",
-    "factorization"
+    "factorization",
+    "svd",
+    "singular-value-decomposition",
+    "pseudo-inverse",
+    "condition-number"
   ],
   "license": "MIT",
   "repository": {

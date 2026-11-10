@@ -581,6 +581,107 @@ def section_d():
     print()
 
 
+# --------------------------------------------------------------------------
+# E. matrix_svd (v0.4.0) anchors — singular values, rank, condition number
+# --------------------------------------------------------------------------
+
+SVD_CASES = [
+    ("diag_3_4", [[3, 0], [0, 4]]),
+    ("ones_2x2", [[1, 1], [1, 1]]),
+    ("rotation_90", [[0, -1], [1, 0]]),
+    ("tall_3x2", [[1, 2], [3, 4], [5, 6]]),
+    ("rank1_3x2", [[1, 2], [2, 4], [3, 6]]),
+    ("square_singular", [[1, 2], [2, 4]]),
+    ("hilbert_3", [[1, 1 / 2, 1 / 3], [1 / 2, 1 / 3, 1 / 4], [1 / 3, 1 / 4, 1 / 5]]),
+    ("zero_2x2", [[0, 0], [0, 0]]),
+    ("row_1x3", [[1, 2, 3]]),
+    ("wide_2x3", [[1, 2, 3], [4, 5, 6]]),
+    ("zero_column", [[1, 0], [0, 0]]),
+    ("rect_4x3", [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]),
+]
+
+
+def frobenius2(m):
+    return sum(x * x for row in m for x in row)
+
+
+def singular_values_gram(m):
+    """Singular values = sqrt of the eigenvalues of AᵀA (symmetric Jacobi on the
+    Gram matrix).  A different matrix and a different iteration from the
+    plugin's one-sided Jacobi on A itself."""
+    rows, cols = len(m), len(m[0])
+    gram = [[sum(m[i][p] * m[i][q] for i in range(rows)) for q in range(cols)] for p in range(cols)]
+    return [math.sqrt(max(v, 0.0)) for v in jacobi_eigenvalues(gram)]
+
+
+def singular_values_2x2(m):
+    """Closed form for 2x2: σ² = (F ± sqrt(F² − 4·det²)) / 2 with F = ‖A‖_F²."""
+    a, b = m[0]
+    c, d = m[1]
+    frob2 = a * a + b * b + c * c + d * d
+    det = a * d - b * c
+    disc = max(frob2 * frob2 - 4 * det * det, 0.0)
+    return [math.sqrt((frob2 + math.sqrt(disc)) / 2), math.sqrt(max((frob2 - math.sqrt(disc)) / 2, 0.0))]
+
+
+def rank_from_singular(values, rows, cols):
+    """Rank with the resolution limit of the *Gram* route: σ below
+    sqrt(ε)·σ₁ cannot be seen from the eigenvalues of AᵀA because forming the
+    Gram matrix squares the condition number.  The exact Fraction rank is the
+    authority; the two agree on every case below."""
+    largest = values[0] if values else 0.0
+    tol = max(rows, cols) * math.sqrt(sys.float_info.epsilon) * largest
+    return sum(1 for v in values if v > tol)
+
+
+def pinv_exact(m):
+    """Moore–Penrose pseudo-inverse for full (row or column) rank, in exact
+    rational arithmetic: (AᵀA)⁻¹·Aᵀ when tall, Aᵀ·(AAᵀ)⁻¹ when wide — the
+    plugin instead accumulates V·Σ⁺·Uᵀ."""
+    rows, cols = len(m), len(m[0])
+    a = to_frac(m)
+    at = [[a[i][j] for i in range(rows)] for j in range(cols)]
+    if rows >= cols:
+        inv = inverse_exact(mul(at, a))
+        return None if inv is None else mul(inv, at)
+    inv = inverse_exact(mul(a, at))
+    return None if inv is None else mul(at, inv)
+
+
+def section_e():
+    print("\n=== E. matrix_svd (v0.4.0) ===")
+    for label, m in SVD_CASES:
+        rows, cols = len(m), len(m[0])
+        values = singular_values_gram(m)
+        rank = rank_from_singular(values, rows, cols)
+        square_or_tall = rank == min(rows, cols)
+        cond = d10(values[0] / values[rank - 1]) if square_or_tall and rank > 0 and values[rank - 1] > 0 else None
+        print(f"  {label}: s = {[d10(v) for v in values]}  raw = {values!r}")
+        print(f"    rank = {rank}/{min(rows, cols)} (Gram resolution limit sqrt(eps))  "
+              f"condition = {cond if cond is not None else 'None (rank-deficient)'}"
+              f"  frobenius2 = {d10(frobenius2(m))}  sum(s^2) = {d10(sum(v * v for v in values))}")
+        if rank < min(rows, cols):
+            print(f"    sigma_min is exactly 0 (exact rank {rank_exact(to_frac(m))}); the Gram route can only"
+                  f" bound it below {d10(min(rows, cols) * math.sqrt(sys.float_info.epsilon) * (values[0] if values else 0.0))}")
+        if rows == 2 and cols == 2:
+            closed = singular_values_2x2(m)
+            print(f"    closed form 2x2 = {[d10(v) for v in closed]}")
+        if rank_exact(to_frac(m)) is not None:
+            print(f"    exact rank (Fractions) = {rank_exact(to_frac(m))}")
+    # pseudo-inverse anchor: tall, full column rank
+    pinv = pinv_exact([[1, 2], [3, 4], [5, 6]])
+    assert pinv is not None
+    tall = [[F(1), F(2)], [F(3), F(4)], [F(5), F(6)]]
+    print("  pinv(tall_3x2) as rows =", [[d10(float(x)) for x in row] for row in pinv])
+    print("  pinv identity A·A⁺·A − A =", [[float(x) for x in row] for row in mul(mul(tall, pinv), tall)])
+    wide_pinv = pinv_exact([[1, 2, 3], [4, 5, 6]])
+    assert wide_pinv is not None
+    print("  pinv(wide_2x3) as rows =", [[d10(float(x)) for x in row] for row in wide_pinv])
+    square_pinv = pinv_exact([[2, 0], [0, 4]])
+    assert square_pinv is not None
+    print("  pinv(diag_2_4) as rows =", [[d10(float(x)) for x in row] for row in square_pinv])
+
+
 def check():
     """Self-checks: the analytic anchors must agree with the independent paths."""
     ok = True
@@ -637,6 +738,36 @@ def check():
     x2, norm2, residual2, normal2 = least_squares_exact([[1, 0], [0, 1], [1, 1]], [2, 3, 5])
     assert x2 == [F(2), F(3)] and norm2 == 0, "least squares: an exact system must fit exactly"
     print("[check] least squares: normal-equation minimizer, orthogonal residual, exact fit OK")
+    # E: SVD invariants — every singular value is reproduced a second way
+    for label, m in SVD_CASES:
+        rows, cols = len(m), len(m[0])
+        values = singular_values_gram(m)
+        rank = rank_from_singular(values, rows, cols)
+        frob = frobenius2(m)
+        assert abs(sum(v * v for v in values) - frob) <= 1e-12 * max(frob, 1.0), f"{label}: Σσ² must equal ‖A‖_F²"
+        assert all(values[i] >= values[i + 1] - 1e-15 for i in range(len(values) - 1)), f"{label}: σ must be descending"
+        if rows == 2 and cols == 2:
+            closed = singular_values_2x2(m)
+            for got, want in zip(values, closed):
+                assert abs(got - want) <= 1e-12 * max(want, 1.0), f"{label}: closed form disagrees ({got} vs {want})"
+        if rows == cols:
+            determinant_value = det_exact(to_frac(m))
+            if determinant_value is not None:
+                det_val = abs(float(determinant_value))
+                prod = 1.0
+                for v in values:
+                    prod *= v
+                assert abs(prod - det_val) <= 1e-9 * max(det_val, 1.0), f"{label}: Πσ must equal |det A|"
+            assert rank == rank_exact(to_frac(m)), f"{label}: rank from σ must equal the exact rank"
+    print("[check] SVD: Σσ² = ‖A‖_F², Πσ = |det|, descending, closed form 2x2, rank == exact rank OK")
+    pinv = pinv_exact([[1, 2], [3, 4], [5, 6]])
+    tall = [[F(1), F(2)], [F(3), F(4)], [F(5), F(6)]]
+    assert pinv is not None
+    assert mul(mul(tall, pinv), tall) == tall, "pseudo-inverse: A·A⁺·A must equal A"
+    assert mul(mul(pinv, tall), pinv) == pinv, "pseudo-inverse: A⁺·A·A⁺ must equal A⁺"
+    proj = mul(tall, pinv)
+    assert proj == [[proj[j][i] for j in range(len(proj))] for i in range(len(proj))], "pseudo-inverse: A·A⁺ must be symmetric"
+    print("[check] pseudo-inverse (exact): A·A⁺·A = A, A⁺·A·A⁺ = A⁺, A·A⁺ symmetric OK")
     print("ALL CHECKS PASSED" if ok else "CHECKS FAILED")
     return 0 if ok else 1
 
@@ -646,6 +777,7 @@ def main():
     section_b()
     section_c()
     section_d()
+    section_e()
     if "--check" in sys.argv:
         return check()
     return 0

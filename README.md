@@ -1,6 +1,6 @@
 # dsh-linalg
 
-Linear algebra toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): matrix multiply, determinant, inverse, trace, transpose, reduced row echelon form, rank, integer matrix powers, a linear system solver that classifies unique / infinitely many / no solutions, a symmetric eigen-decomposition with measured residuals, matrix factorizations (LU with partial pivoting, thin QR, Cholesky) with measured reconstruction residuals, a least-squares solver for overdetermined systems, and vector operations (dot / cross / norm / projection / angle).
+Linear algebra toolbox for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`): matrix multiply, determinant, inverse, trace, transpose, reduced row echelon form, rank, integer matrix powers, a linear system solver that classifies unique / infinitely many / no solutions, a symmetric eigen-decomposition with measured residuals, matrix factorizations (LU with partial pivoting, thin QR, Cholesky) with measured reconstruction residuals, a singular value decomposition with rank and condition number, a least-squares solver for overdetermined systems, and vector operations (dot / cross / norm / projection / angle).
 
 Zero runtime dependencies, pure local arithmetic — no network, no processes, no eval.
 
@@ -23,6 +23,7 @@ Replace `web` with your profile name. (Requires `pnpm` on your PATH.)
 | `matrix_multiply` | Multiply two matrices A·B with dimension checking |
 | `matrix_compute` | One operation per call: `transpose`, `determinant`, `inverse`, `trace`, `rref`, `rank`, `power` (integer exponent) |
 | `matrix_decompose` | One factorization per call: `lu` (P·A = L·U, singular flagged), `qr` (thin A = Q·R, R diagonal positive) or `cholesky` (A = L·Lᵀ, symmetric positive definite only) — each with a measured reconstruction residual |
+| `matrix_svd` | Singular value decomposition A = U·Σ·Vᵀ: all singular values (descending), numerical rank, condition number σ₁/σ_rank, thin U/V, measured residuals, and an optional Moore–Penrose pseudo-inverse |
 | `matrix_eigen` | Eigen-decomposition of a real symmetric matrix: all eigenvalues (descending) + unit eigenvectors + measured residual |
 | `least_squares` | Minimizer of ‖A·x − b‖ for overdetermined systems, plus the minimum residual norm and max ‖Aᵀ(A·x − b)‖ (rank-deficient / underdetermined input is an error) |
 | `solve_linear` | Solve Ax = b; classifies unique / infinite (particular + nullspace basis + free-variable count) / no solution |
@@ -125,6 +126,16 @@ least_squares(a=[[1,1],[1,2],[1,3]], b=[1,2,2])
   min ‖A·x − b‖ = 0.4082482905, max ‖Aᵀ(A·x − b)‖ = 0
 ```
 
+Singular values of a 3×2 matrix, with the pseudo-inverse:
+
+```
+matrix_svd(matrix=[[1,2],[3,4],[5,6]], pseudoInverse=true)
+→ singular values (descending): 9.5255180916, 0.5143005807
+  rank 2 of 2, condition number 18.5213053413
+  pseudo-inverse A⁺ (2x3): [[-1.3333333333, -0.3333333333, 0.6666666667],
+                            [1.0833333333, 0.3333333333, -0.4166666667]]
+```
+
 ## Numerical behaviour
 
 - Gaussian elimination with partial pivoting (largest-magnitude pivot per column).
@@ -135,6 +146,7 @@ least_squares(a=[[1,1],[1,2],[1,3]], b=[1,2,2])
 - `power` uses binary exponentiation; negative exponents invert first (and fail cleanly on singular input), exponents are limited to the integer range −64…64.
 - `matrix_decompose` reports the residual it actually measured (`max |P·A − L·U|`, `max |A − Q·R|`, `max |A − L·Lᵀ|`). A singular matrix still gets an LU pair, but `singular: true` is set and the determinant from U is 0; linearly dependent columns make QR fail (no orthonormal completion is invented); an asymmetric or indefinite matrix is rejected by Cholesky with the offending entry / pivot spelled out.
 - `least_squares` solves through the thin QR factorization (not the normal equations, which square the condition number) and returns both the minimum residual norm and `max |Aᵀ(A·x − b)|` — zero proves the answer really is the minimizer. Rank-deficient or underdetermined input is an error rather than one arbitrary minimizer.
+- `matrix_svd` runs one-sided Jacobi: pairs of columns are rotated until they are mutually orthogonal, so the column norms are the singular values and the accumulated rotations are the right singular vectors. Rank uses the standard `σ > max(m,n)·ε·σ₁` tolerance, and it is a **true zero** rather than a small number: `[[1,2,3],[4,5,6],[7,8,9],[10,11,12]]` reports rank 2 with σ₃ = 0 (forming AᵀA would square the condition number and lose that zero). A rank-deficient matrix gets **no condition number** — the honest answer is "infinite", reported as an absent field plus a `note`, not as a huge number. Factors are signed so the leading non-zero component of each right singular vector is positive, and the reply carries `max |A − U·Σ·Vᵀ|` plus the largest `|UᵀU − I|` / `|VᵀV − I|` entry.
 
 ## Configuration
 

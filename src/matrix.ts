@@ -826,3 +826,249 @@ export function leastSquares(a: Matrix, b: number[], roundPlaces: number): Least
     rows,
   }
 }
+
+export interface SvdOutcome {
+  /** Number of rows of the input. */
+  rows: number
+  /** Number of columns of the input. */
+  columns: number
+  /** Every singular value, descending (one per column of the input). */
+  singularValues: number[]
+  /** How many singular values exceed the rank tolerance. */
+  rank: number
+  /** True when rank < min(rows, columns). */
+  singular: boolean
+  /** Left singular vectors of the non-zero singular values, as COLUMNS (rows × rank). */
+  u: Matrix
+  /** Right singular vectors of the non-zero singular values, as COLUMNS (columns × rank). */
+  v: Matrix
+  /** max |A − U·Σ·Vᵀ| over the retained rank (honest accuracy report). */
+  residual: number
+  /** max entry of |UᵀU − I| and |VᵀV − I| (should be ~0). */
+  orthogonality: number
+  /** Sweeps of the one-sided Jacobi iteration actually performed. */
+  sweeps: number
+  /** Column-pair rotations applied. */
+  rotations: number
+  /** σ₁/σ_rank — present only when the matrix has full rank (a singular matrix has no finite value). */
+  conditionNumber?: number
+  /** Moore–Penrose pseudo-inverse A⁺ (columns × rows), only when requested. */
+  pseudoInverse?: Matrix
+  /** max |A·A⁺·A − A| — zero (to tolerance) proves the pseudo-inverse satisfies the defining identity. */
+  pseudoInverseResidual?: number
+  /** Present when a quantity is deliberately absent (e.g. the condition number of a singular matrix). */
+  note?: string
+}
+
+/**
+ * Singular value decomposition A = U·Σ·Vᵀ via the one-sided Jacobi method:
+ * pairs of columns are rotated until they are mutually orthogonal, so the
+ * column norms are the singular values and the accumulated rotations are the
+ * right singular vectors. Rank comes from the usual σ > max(m,n)·ε·σ₁
+ * tolerance; a rank-deficient matrix gets no condition number (the honest
+ * answer is "infinite", not a huge number).
+ *
+ * `roundPlaces` only affects reported numbers; the iteration runs in full
+ * double precision.
+ */
+export function svdDecompose(m: Matrix, roundPlaces: number, wantPseudoInverse = false): SvdOutcome | { error: string } {
+  const rows = rowsOf(m)
+  const cols = colsOf(m)
+  if (rows === 0 || cols === 0) return { error: 'svd requires a non-empty matrix' }
+  let scale = 0
+  for (const row of m) for (const x of row) scale = Math.max(scale, Math.abs(x))
+  if (scale === 0) {
+    // Every singular value is exactly zero: no directions, no condition number.
+    return {
+      rows,
+      columns: cols,
+      singularValues: Array.from({ length: cols }, () => 0),
+      rank: 0,
+      singular: true,
+      u: Array.from({ length: rows }, () => [] as number[]),
+      v: Array.from({ length: cols }, () => [] as number[]),
+      residual: 0,
+      orthogonality: 0,
+      sweeps: 0,
+      rotations: 0,
+      note: 'the zero matrix has no non-zero singular values, so there are no singular-vector directions and no condition number',
+    }
+  }
+  const a: Matrix = m.map((row) => [...row])
+  const v: Matrix = Array.from({ length: cols }, (_, i) => Array.from({ length: cols }, (_, j) => (i === j ? 1 : 0)))
+  const maxSweeps = 60
+  const correlation = (p: number, q: number): { alpha: number; beta: number; gamma: number } => {
+    let alpha = 0
+    let beta = 0
+    let gamma = 0
+    for (let i = 0; i < rows; i++) {
+      const ap = a[i]?.[p] ?? 0
+      const aq = a[i]?.[q] ?? 0
+      alpha += ap * ap
+      beta += aq * aq
+      gamma += ap * aq
+    }
+    return { alpha, beta, gamma }
+  }
+  const maxRelativeCorrelation = (): number => {
+    let worst = 0
+    for (let p = 0; p < cols - 1; p++) {
+      for (let q = p + 1; q < cols; q++) {
+        const { alpha, beta, gamma } = correlation(p, q)
+        if (alpha === 0 || beta === 0) continue
+        worst = Math.max(worst, Math.abs(gamma) / Math.sqrt(alpha * beta))
+      }
+    }
+    return worst
+  }
+  let sweeps = 0
+  let rotations = 0
+  let converged = false
+  let remaining = 1
+  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+    sweeps = sweep + 1
+    for (let p = 0; p < cols - 1; p++) {
+      for (let q = p + 1; q < cols; q++) {
+        const { alpha, beta, gamma } = correlation(p, q)
+        if (alpha === 0 || beta === 0) continue
+        if (Math.abs(gamma) <= 1e-15 * Math.sqrt(alpha * beta)) continue
+        const zeta = (beta - alpha) / (2 * gamma)
+        const t = (zeta >= 0 ? 1 : -1) / (Math.abs(zeta) + Math.sqrt(1 + zeta * zeta))
+        const c = 1 / Math.sqrt(1 + t * t)
+        const s = c * t
+        for (let i = 0; i < rows; i++) {
+          const ap = a[i]?.[p] ?? 0
+          const aq = a[i]?.[q] ?? 0
+          a[i]![p] = c * ap - s * aq
+          a[i]![q] = s * ap + c * aq
+        }
+        for (let k = 0; k < cols; k++) {
+          const vp = v[k]?.[p] ?? 0
+          const vq = v[k]?.[q] ?? 0
+          v[k]![p] = c * vp - s * vq
+          v[k]![q] = s * vp + c * vq
+        }
+        rotations++
+      }
+    }
+    // Convergence is measured on the resulting columns, not on "did we rotate":
+    // the threshold below is the same one the rotations use, so this is the
+    // actual state of the answer rather than a proxy for it.
+    remaining = maxRelativeCorrelation()
+    if (remaining <= 1e-15) {
+      converged = true
+      break
+    }
+  }
+  if (!converged) {
+    return {
+      error: `one-sided Jacobi iteration did not converge within ${maxSweeps} sweeps (${rotations} rotations, largest remaining relative column correlation ${remaining}); no factorization is reported rather than an inaccurate one`,
+    }
+  }
+  const norms = Array.from({ length: cols }, (_, j) => {
+    let squared = 0
+    for (let i = 0; i < rows; i++) {
+      const x = a[i]?.[j] ?? 0
+      squared += x * x
+    }
+    return Math.sqrt(squared)
+  })
+  const order = Array.from({ length: cols }, (_, j) => j).sort((left, right) => {
+    const diff = (norms[right] ?? 0) - (norms[left] ?? 0)
+    return diff !== 0 ? diff : left - right
+  })
+  const sortedValues = order.map((j) => norms[j] ?? 0)
+  const largest = sortedValues[0] ?? 0
+  const rankTolerance = Math.max(rows, cols) * Number.EPSILON * largest
+  const rank = sortedValues.filter((value) => value > rankTolerance).length
+  const u: Matrix = Array.from({ length: rows }, () => [] as number[])
+  const vThin: Matrix = Array.from({ length: cols }, () => [] as number[])
+  const kept: number[] = []
+  for (let t = 0; t < rank; t++) {
+    const j = order[t] as number
+    const norm = sortedValues[t] as number
+    let left = Array.from({ length: rows }, (_, i) => (a[i]?.[j] ?? 0) / norm)
+    let right = Array.from({ length: cols }, (_, k) => v[k]?.[j] ?? 0)
+    // Deterministic sign: the leading non-negligible component of the right
+    // singular vector is positive, and the left vector flips with it so that
+    // A = U·Σ·Vᵀ is unchanged.
+    let lead = 0
+    while (lead < cols && Math.abs(right[lead] ?? 0) <= 1e-8) lead++
+    if (lead < cols && (right[lead] ?? 0) < 0) {
+      right = right.map((x) => -x)
+      left = left.map((x) => -x)
+    }
+    for (let i = 0; i < rows; i++) u[i]!.push(left[i] ?? 0)
+    for (let k = 0; k < cols; k++) vThin[k]!.push(right[k] ?? 0)
+    kept.push(norm)
+  }
+  let residual = 0
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      let sum = 0
+      for (let t = 0; t < kept.length; t++) sum += (u[i]?.[t] ?? 0) * (kept[t] as number) * (vThin[j]?.[t] ?? 0)
+      residual = Math.max(residual, Math.abs((m[i]?.[j] ?? 0) - sum))
+    }
+  }
+  let orthogonality = 0
+  const gramDeviation = (columns: Matrix, count: number): number => {
+    let worst = 0
+    for (let first = 0; first < count; first++) {
+      for (let second = 0; second < count; second++) {
+        let dot = 0
+        for (let i = 0; i < columns.length; i++) dot += (columns[i]?.[first] ?? 0) * (columns[i]?.[second] ?? 0)
+        worst = Math.max(worst, Math.abs(dot - (first === second ? 1 : 0)))
+      }
+    }
+    return worst
+  }
+  orthogonality = Math.max(gramDeviation(u, kept.length), gramDeviation(vThin, kept.length))
+  const outcome: SvdOutcome = {
+    rows,
+    columns: cols,
+    singularValues: sortedValues.map((value) => cleanValue(value, roundPlaces)),
+    rank,
+    singular: rank < Math.min(rows, cols),
+    u: cleanMatrix(u, roundPlaces),
+    v: cleanMatrix(vThin, roundPlaces),
+    residual: cleanValue(residual, roundPlaces),
+    orthogonality: cleanValue(orthogonality, roundPlaces),
+    sweeps,
+    rotations,
+  }
+  if (outcome.singular) {
+    outcome.note = `rank ${rank} of ${Math.min(rows, cols)}: the smallest singular value is at or below the rank tolerance ${rankTolerance}, so no condition number is reported (it would be infinite) and the factors span only the ${rank} non-negligible direction(s)`
+  } else {
+    const smallest = kept[kept.length - 1] as number
+    outcome.conditionNumber = cleanValue(largest / smallest, roundPlaces)
+  }
+  if (wantPseudoInverse) {
+    // A⁺ = V·Σ⁺·Uᵀ, with 1/σ for every retained singular value.
+    const pseudo: Matrix = Array.from({ length: cols }, () => Array.from({ length: rows }, () => 0))
+    for (let k = 0; k < cols; k++) {
+      for (let i = 0; i < rows; i++) {
+        let sum = 0
+        for (let t = 0; t < kept.length; t++) sum += (vThin[k]?.[t] ?? 0) / (kept[t] as number) * (u[i]?.[t] ?? 0)
+        pseudo[k]![i] = sum
+      }
+    }
+    // Verify the defining identity A·A⁺·A = A with the computed (unrounded) factors.
+    const aa = Array.from({ length: rows }, (_, i) =>
+      Array.from({ length: rows }, (_, l) => {
+        let sum = 0
+        for (let k = 0; k < cols; k++) sum += (m[i]?.[k] ?? 0) * (pseudo[k]?.[l] ?? 0)
+        return sum
+      }))
+    let pseudoResidual = 0
+    for (let i = 0; i < rows; i++) {
+      for (let j = 0; j < cols; j++) {
+        let sum = 0
+        for (let l = 0; l < rows; l++) sum += (aa[i]?.[l] ?? 0) * (m[l]?.[j] ?? 0)
+        pseudoResidual = Math.max(pseudoResidual, Math.abs((m[i]?.[j] ?? 0) - sum))
+      }
+    }
+    outcome.pseudoInverse = cleanMatrix(pseudo, roundPlaces)
+    outcome.pseudoInverseResidual = cleanValue(pseudoResidual, roundPlaces)
+  }
+  return outcome
+}
